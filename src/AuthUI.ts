@@ -1,17 +1,13 @@
 import { authDB } from './AuthDB'
-import type { ScreenId, SignupDetails, ToastOptions } from './index'
-import { isValidContact, isValidEmail, isValidIdentifier } from './index'
-import { rafThrottle, startTimedLoop } from './PerformanceLayer'
-import { getLoginDetails, recordLoginDetail } from './LoginDetails'
-import { recordSignupDetail } from './SignupDetails'
+import type { ScreenId, ToastOptions } from './index'
+import { startTimedLoop } from './PerformanceLayer'
 import { currentPermission, enableNotifications, notifySupported, onStorageUnavailable, prefEnabled, pushLocal, setPref } from './Notify'
 import {
   FP_CRED_KEY,
   FP_MAX_ATTEMPTS,
-  SECURING_DATA_LABEL,
   STORAGE_UNAVAILABLE_MESSAGE,
 } from './utils/constants'
-import { BELL_OFF_ICON, BELL_ON_ICON, EYE_OFF_ICON, EYE_ON_ICON } from './utils/icons'
+import { BELL_OFF_ICON, BELL_ON_ICON } from './utils/icons'
 
 function bufferToBase64url(buffer: ArrayBuffer): string {
   const bytes = new Uint8Array(buffer)
@@ -25,27 +21,31 @@ function base64urlToBytes(value: string): Uint8Array {
   return Uint8Array.from(atob(padded), char => char.charCodeAt(0))
 }
 
-function readFpStore(): Record<string, string> {
+/** Single-device fingerprint credential id (tolerates the old per-uid map shape). */
+function readFpCredentialId(): string | null {
   try {
-    const parsed: unknown = JSON.parse(localStorage.getItem(FP_CRED_KEY) || '{}')
-    if (typeof parsed === 'object' && parsed !== null) return parsed as Record<string, string>
+    const raw = localStorage.getItem(FP_CRED_KEY)
+    if (!raw) return null
+    const parsed: unknown = JSON.parse(raw)
+    if (typeof parsed === 'string' && parsed) return parsed
+    if (parsed && typeof parsed === 'object') {
+      for (const value of Object.values(parsed as Record<string, unknown>)) {
+        if (typeof value === 'string' && value) return value
+      }
+    }
   } catch {
     // Corrupt store reads as empty; re-registration fixes it.
   }
-  return {}
+  return null
 }
 
-/** Escape user-supplied text before it is placed into innerHTML. */
-function escapeHtml(value: string): string {
-  return value.replace(/[&<>"']/g, (char) => {
-    switch (char) {
-      case '&': return '&amp;'
-      case '<': return '&lt;'
-      case '>': return '&gt;'
-      case '"': return '&quot;'
-      default: return '&#39;'
-    }
-  })
+function writeFpCredentialId(id: string | null): void {
+  try {
+    if (id) localStorage.setItem(FP_CRED_KEY, JSON.stringify(id))
+    else localStorage.removeItem(FP_CRED_KEY)
+  } catch {
+    // Best-effort; caller shows a toast.
+  }
 }
 
 export class AuthUI {
@@ -54,27 +54,18 @@ export class AuthUI {
   private toastTimeout: number | undefined
   private isBotAnimating = false
   private botBubbleTimer: number | undefined
-  private botBubbleSequenceTimer: number | undefined
   private avatarRevealTimer: number | undefined
   private avatarHideTimer: number | undefined
   private avatarCloseTimer: number | undefined
-  private signupStep = 0
-  private signupPrefillIdentifier = ''
-  private signupFocusTimer: number | undefined
   private splashTimer: number | undefined
   private passcodeFocusTimer: number | undefined
   private passcodeResetTimer: number | undefined
-  private loginFlashTimer: number | undefined
   private botFlashTimer: number | undefined
   private botFallTimer: number | undefined
   private botFallResetTimer: number | undefined
   private botIdleRevertTimer: number | undefined
-  private testNotificationTimers: number[] = []
   private storageUnavailableUnsubscribe: (() => void) | undefined
-  private mouseTilt: { handler: (event: MouseEvent) => void; cancel: () => void } | undefined
-  private touchTilts: Array<{ card: HTMLElement; handler: (event: TouchEvent) => void; cancel: () => void }> = []
   private containerClickHandler: ((event: Event) => void) | undefined
-  private containerSubmitHandler: ((event: Event) => void) | undefined
   private passcodeMode: 'verify' | 'set' | 'confirm' = 'verify'
   private pendingPasscode = ''
   private isFpBusy = false
@@ -94,11 +85,6 @@ export class AuthUI {
     this.bindEvents()
     this.startBotIdleAnimation()
     this.refreshBell()
-    if (window.location.hash === '#reverify') {
-      this.configureReverify('')
-      this.showScreen('v-reverify')
-      return
-    }
     this.startSplashTimer()
   }
 
@@ -132,7 +118,7 @@ export class AuthUI {
         </div>
       </header>
       <main class="auth-shell">
-        <section class="view show" id="v-start" role="button" tabindex="0" aria-label="Tap anywhere to continue" data-action="show-screen" data-screen="v-login">
+        <section class="view show" id="v-start" role="button" tabindex="0" aria-label="Tap anywhere to continue" data-action="show-screen" data-screen="v-code">
           <div class="start-screen hts-intro">
             <div class="hts-stage-glow" aria-hidden="true"></div>
             <div class="hts-top-lockup" aria-label="HTS.OS">${this.renderTopBrand()}</div>
@@ -142,92 +128,12 @@ export class AuthUI {
           </div>
         </section>
 
-        <section class="view" id="v-login" aria-labelledby="login-title" hidden>
-          <h1 class="title" id="login-title">INITIALIZE ACCESS</h1>
-          <div class="scene" id="scene1">
-            <div class="round3d thali-card login-orb" id="card1">
-              <div class="thali-plate"><div class="thali-inner">
-                <form id="login-form" class="auth-form" novalidate>
-                  <label for="li-id">Email ID</label>
-                  <div class="input-wrap mirror-wrap identifier-wrap"><input id="li-id" name="identifier" autocomplete="username" required><span class="input-pencil" aria-hidden="true">|</span><div class="mirror" id="mirror-li-id" aria-hidden="true"></div></div>
-                  <label for="li-pw">Password</label>
-                  <div class="input-wrap mirror-wrap password-wrap"><input id="li-pw" name="password" type="password" autocomplete="current-password" minlength="6" required><span class="input-pencil" aria-hidden="true">|</span><div class="mirror" id="mirror-li-pw" aria-hidden="true"></div><button type="button" class="eye" aria-label="Show password" data-action="toggle-password" data-target="li-pw">${EYE_OFF_ICON}</button></div>
-                  <button class="primary-button btn-enter" type="submit"><span>ENTER</span></button>
-                  <div class="orb-links">
-                    <button class="link-button" type="button" data-action="show-screen" data-screen="v-signup">New here? Create account</button>
-                    <button class="link-button" type="button" data-action="forgot-password">Forgot password?</button>
-                  </div>
-                </form>
-              </div></div>
-            </div>
-          </div>
-        </section>
-
-        <section class="view" id="v-signup" aria-labelledby="signup-title" hidden>
-          <div class="signup-quote-layout">
-            <h1 class="sr-only" id="signup-title">Create your account</h1>
-            <blockquote class="technology-quote">“The best way to predict the future is to invent it.”</blockquote>
-            <form id="signup-form" class="signup-wizard" novalidate>
-              <div class="signup-roller" aria-live="polite">
-                <div class="signup-track" id="signup-track">
-                  <fieldset class="signup-step signup-name-step is-active" data-signup-step="0">
-                    <div class="signup-step-title" role="heading" aria-level="2">Tell me your name</div>
-                    <div class="input-wrap"><input id="su-name" name="name" autocomplete="name" placeholder="Your full name" required></div>
-                    <button class="signup-next" type="button" data-action="signup-next" aria-label="Next step">→</button>
-                  </fieldset>
-                  <fieldset class="signup-step" data-signup-step="1" aria-hidden="true">
-                    <div class="signup-step-title" role="heading" aria-level="2">Tell me your contact number</div>
-                    <div class="input-wrap"><input id="su-contact" name="contact" type="tel" inputmode="tel" autocomplete="tel" placeholder="Contact number" required></div>
-                    <div class="signup-step-actions"><button class="signup-prev" type="button" data-action="signup-prev" aria-label="Previous step">←</button><button class="signup-next" type="button" data-action="signup-next" aria-label="Next step">→</button></div>
-                  </fieldset>
-                  <fieldset class="signup-step" data-signup-step="2" aria-hidden="true">
-                    <div class="signup-step-title" role="heading" aria-level="2">Write your email ID</div>
-                    <div class="input-wrap"><input id="su-email" name="email" type="email" autocomplete="email" placeholder="you@example.com" required></div>
-                    <div class="signup-step-actions"><button class="signup-prev" type="button" data-action="signup-prev" aria-label="Previous step">←</button><button class="signup-next" type="button" data-action="signup-next" aria-label="Next step">→</button></div>
-                  </fieldset>
-                  <fieldset class="signup-step" data-signup-step="3" aria-hidden="true">
-                    <div class="signup-step-title" role="heading" aria-level="2">Choose your secret</div>
-                    <div class="input-wrap signup-secret-wrap"><input id="su-password" name="password" type="password" autocomplete="new-password" placeholder="At least 6 characters" minlength="6" required><button type="button" class="eye signup-eye" aria-label="Show password" data-action="toggle-password" data-target="su-password">${EYE_OFF_ICON}</button></div>
-                    <div class="signup-step-actions"><button class="signup-prev" type="button" data-action="signup-prev" aria-label="Previous step">←</button><button class="signup-next" type="button" data-action="signup-next" aria-label="Next step">→</button></div>
-                  </fieldset>
-                  <fieldset class="signup-step" data-signup-step="4" aria-hidden="true">
-                    <div class="signup-step-title" role="heading" aria-level="2">Confirm your secret</div>
-                    <div class="input-wrap signup-secret-wrap"><input id="su-confirm-password" name="confirmPassword" type="password" autocomplete="new-password" placeholder="Repeat your secret" minlength="6" required><button type="button" class="eye signup-eye" aria-label="Show password" data-action="toggle-password" data-target="su-confirm-password">${EYE_OFF_ICON}</button></div>
-                    <div class="signup-step-actions"><button class="signup-prev" type="button" data-action="signup-prev" aria-label="Previous step">←</button><button class="signup-next" type="button" data-action="signup-next" aria-label="Next step">→</button></div>
-                  </fieldset>
-                  <fieldset class="signup-step signup-terms-step" data-signup-step="5" aria-hidden="true">
-                    <div class="signup-step-title" role="heading" aria-level="2">One last promise</div>
-                    <label class="terms-check"><input id="su-terms" name="terms" type="checkbox" required><span>I agree to the <a href="#terms" data-action="terms-link">terms and conditions</a> and <a href="#privacy" data-action="privacy-link">privacy policy</a>.</span></label>
-                    <button class="signup-join" type="submit">JOIN →</button>
-                    <button class="signup-prev signup-last-back" type="button" data-action="signup-prev" aria-label="Previous step">←</button>
-                  </fieldset>
-                </div>
-              </div>
-              <div class="signup-progress" aria-label="Signup progress"><span class="signup-progress-dots"></span><span class="signup-progress-count">1 / 6</span></div>
-            </form>
-            <button class="back-button" type="button" data-action="show-screen" data-screen="v-login">← Back to Login</button>
-          </div>
+        <section class="view" id="v-code" aria-label="Unlock" hidden>
+          <h1 class="title">UNLOCK<small>Fingerprint ya 6-digit code se kholo</small></h1>
         </section>
 
         <section class="view" id="v-work-progress" aria-label="Main screen" hidden>
           <div class="work-progress-screen"></div>
-        </section>
-
-        <section class="view" id="v-reverify" aria-labelledby="reverify-title" hidden>
-          <div class="reverify-layout">
-            <h1 class="title screen-title" id="reverify-title">Verify your email ✉️<small>We sent a verification link to your inbox</small></h1>
-            <div class="auth-card reverify-card" id="card3">
-              <form id="reverify-form" class="auth-form" novalidate>
-                <label for="rv-id">Email</label>
-                <div class="otp-row">
-                  <div class="input-wrap"><input id="rv-id" type="email" autocomplete="email" readonly></div>
-                  <button type="button" class="mini-button" data-action="send-otp">Send link</button>
-                </div>
-                <button class="primary-button" type="submit">I'VE VERIFIED ✓</button>
-              </form>
-            </div>
-            <button class="back-button" type="button" data-action="show-screen" data-screen="v-login">← Back to Login</button>
-          </div>
         </section>
 
       </main>
@@ -241,7 +147,7 @@ export class AuthUI {
           <div class="input-wrap passcode-wrap"><input id="passcode-input" inputmode="numeric" autocomplete="one-time-code" maxlength="6" placeholder="••••••" aria-label="6-digit access code"></div>
           <div class="passcode-error" id="passcode-error" hidden>Wrong code, try again</div>
           <button class="passcode-fp" id="fp-button" type="button" data-action="fingerprint" hidden aria-label="Unlock with fingerprint"><span class="passcode-fp-icon" aria-hidden="true">&#9757;</span><span id="fp-label">Use fingerprint</span></button>
-          <button class="passcode-alt" type="button" data-action="show-screen" data-screen="v-login">try another way</button>
+          <button class="passcode-alt" type="button" hidden aria-hidden="true" tabindex="-1">try another way</button>
         </div>
       </div>
       <div id="toast" role="status" aria-live="polite"></div>
@@ -263,36 +169,6 @@ export class AuthUI {
       const content = character === ' ' ? '&nbsp;' : character
       return `<span class="tagline-char" aria-hidden="true" style="--tagline-index:${index}">${content}</span>`
     }).join('')
-  }
-
-  /**
-   * Shared input wiring: mirror rendering, pencil state, plain-text paste,
-   * bot mood sync, and focus/blur feedback. Applied to login + signup fields.
-   */
-  private attachInputEffects(
-    input: HTMLInputElement | null,
-    mirror: HTMLElement | null,
-    isPassword = false,
-  ): void {
-    if (!input) return
-    input.addEventListener('input', () => {
-      if (mirror) this.paintMirror(input, mirror, isPassword)
-      this.updatePencil(input)
-      const loginId = this.container.querySelector<HTMLInputElement>('#li-id')
-      const loginPw = this.container.querySelector<HTMLInputElement>('#li-pw')
-      if (loginId && loginPw && (input === loginId || input === loginPw)) {
-        this.updateBotFromInput(loginId, loginPw)
-      }
-    })
-    input.addEventListener('paste', (event) => this.handlePlainPaste(event, input))
-    input.addEventListener('focus', () => this.setBotMood('listening'))
-    input.addEventListener('blur', () => {
-      const loginId = this.container.querySelector<HTMLInputElement>('#li-id')
-      const loginPw = this.container.querySelector<HTMLInputElement>('#li-pw')
-      if (loginId && loginPw && (input === loginId || input === loginPw)) {
-        this.updateBotFromInput(loginId, loginPw)
-      }
-    })
   }
 
   private bindEvents(): void {
@@ -318,68 +194,25 @@ export class AuthUI {
       this.showToast({ message: STORAGE_UNAVAILABLE_MESSAGE, type: 'warning' })
     })
 
-    const loginCard = this.container.querySelector<HTMLElement>('#card1')
-    let borderTimer: number | undefined
-    loginCard?.addEventListener('pointerdown', () => {
-      loginCard.classList.remove('card-awake')
-      void loginCard.offsetWidth
-      loginCard.classList.add('card-awake')
-      if (borderTimer !== undefined) clearTimeout(borderTimer)
-      borderTimer = window.setTimeout(() => loginCard.classList.remove('card-awake'), 1100)
-    })
-
-    this.container.querySelectorAll<HTMLElement>('#card1 .input-wrap').forEach((wrap) => {
-      wrap.addEventListener('click', (event) => {
-        if (event.target instanceof Element && event.target.closest('button')) return
-        wrap.querySelector<HTMLInputElement>('input')?.focus()
-      })
-    })
-    const identifierWrap = this.container.querySelector<HTMLElement>('#card1 .identifier-wrap')
-    identifierWrap?.addEventListener('pointerdown', (event) => {
-      if (event.target instanceof Element && event.target.closest('button')) return
-      const input = identifierWrap.querySelector<HTMLInputElement>('input')
-      if (input && document.activeElement !== input) input.focus()
-    })
-
     this.containerClickHandler = (event) => {
       const target = event.target instanceof Element ? event.target.closest<HTMLElement>('[data-action]') : null
       if (!target) return
       const action = target.dataset.action
       if (action === 'show-screen') {
         const screen = target.dataset.screen
-        if (screen === 'v-signup') {
-          // Login me typed email ho to signup me prefill karo
-          const typed = this.container.querySelector<HTMLInputElement>('#li-id')?.value.trim() || ''
-          if (typed) this.signupPrefillIdentifier = typed
-        }
-        if (screen === 'v-start' || screen === 'v-login' || screen === 'v-signup' || screen === 'v-reverify' || screen === 'v-work-progress') this.showScreen(screen)
+        if (screen === 'v-start' || screen === 'v-code' || screen === 'v-work-progress') this.showScreen(screen)
       }
-      if (action === 'forgot-password') void this.handleForgotPassword(target)
-      if (action === 'toggle-password') this.togglePassword(target)
-      if (action === 'send-otp') void this.sendOTP()
-      if (action === 'verify-email') void this.sendOTP()
       if (action === 'notify-toggle') void this.toggleNotifications()
-      if (action === 'fingerprint') void this.handleFingerprint()
-      if (action === 'signup-next') this.advanceSignupStep()
-      if (action === 'signup-prev') this.retreatSignupStep()
-      if (action === 'logout') this.logout()
+      if (action === 'fingerprint') {
+        // Gate (overlay) khula ho to unlock flow, main screen par ho to setup/test flow.
+        const overlay = this.container.querySelector<HTMLElement>('#passcode-overlay')
+        if (overlay && !overlay.hidden) void this.handleGateFingerprint()
+        else void this.handleMainFingerprint()
+      }
       if (action === 'set-passcode') this.openPasscodeSetup()
-      if (action === 'terms-link' || action === 'privacy-link') event.preventDefault()
+      if (action === 'lock-now') this.lockNow()
     }
     this.container.addEventListener('click', this.containerClickHandler)
-
-    this.containerSubmitHandler = (event) => {
-      event.preventDefault()
-      const form = event.target
-      if (!(form instanceof HTMLFormElement)) return
-      if (form.id === 'login-form') {
-        this.hapticFeedback()
-        void this.handleLogin(form)
-      }
-      if (form.id === 'signup-form') void this.handleSignup(form)
-      if (form.id === 'reverify-form') void this.handleReverify(form)
-    }
-    this.container.addEventListener('submit', this.containerSubmitHandler)
 
     const passcodeInput = this.container.querySelector<HTMLInputElement>('#passcode-input')
     passcodeInput?.addEventListener('input', () => this.handlePasscodeInput())
@@ -390,87 +223,44 @@ export class AuthUI {
       passcodeInput?.focus({ preventScroll: true })
     })
 
-    const loginIdentifier = this.container.querySelector<HTMLInputElement>('#li-id')
-    const loginPassword = this.container.querySelector<HTMLInputElement>('#li-pw')
-    const identifierMirror = this.container.querySelector<HTMLElement>('#mirror-li-id')
-    const passwordMirror = this.container.querySelector<HTMLElement>('#mirror-li-pw')
-    this.attachInputEffects(loginIdentifier, identifierMirror, false)
-    this.attachInputEffects(loginPassword, passwordMirror, true)
-    // Signup fields share the same focus/pencil/paste behaviour (no mirror element).
-    this.attachInputEffects(this.container.querySelector<HTMLInputElement>('#su-name'), null, false)
-    this.attachInputEffects(this.container.querySelector<HTMLInputElement>('#su-contact'), null, false)
-    this.attachInputEffects(this.container.querySelector<HTMLInputElement>('#su-email'), null, false)
-    this.attachInputEffects(this.container.querySelector<HTMLInputElement>('#su-password'), null, true)
-    this.attachInputEffects(this.container.querySelector<HTMLInputElement>('#su-confirm-password'), null, true)
-
-    const tiltCards = [
-      this.container.querySelector<HTMLElement>('#card3'),
-    ].filter((card): card is HTMLElement => card !== null)
-    this.mouseTilt = rafThrottle<MouseEvent>((event) => {
-      const x = event.clientX / window.innerWidth - .5
-      const y = event.clientY / window.innerHeight - .5
-      tiltCards.forEach(card => { card.style.transform = `perspective(1000px) rotateX(${2 - y * 6}deg) rotateY(${-2 + x * 6}deg)` })
-    })
-    document.addEventListener('mousemove', this.mouseTilt.handler, { passive: true })
-    this.touchTilts = tiltCards.map(card => {
-      const touchTilt = rafThrottle<TouchEvent>((event) => {
-        const touch = event.touches[0]
-        if (!touch) return
-        const x = touch.clientX / window.innerWidth - .5
-        const y = touch.clientY / window.innerHeight - .5
-        card.style.transform = `perspective(1000px) rotateX(${2 - y * 6}deg) rotateY(${-2 + x * 6}deg)`
-      })
-      card.addEventListener('touchmove', touchTilt.handler, { passive: true })
-      return { card, handler: touchTilt.handler, cancel: touchTilt.cancel }
-    })
-
     document.addEventListener('keydown', this.handleEscape)
 
     const start = this.container.querySelector<HTMLElement>('#v-start')
     start?.addEventListener('keydown', (event) => {
       if ((event.key === 'Enter' || event.key === ' ') && this.currentScreen === 'v-start') {
         event.preventDefault()
-        this.showScreen('v-login')
+        this.showScreen('v-code')
       }
     })
   }
 
   private readonly handleEscape = (event: KeyboardEvent): void => {
-    const overlay = this.container.querySelector<HTMLElement>('#passcode-overlay')
-    if (overlay && !overlay.hidden) return
-    if (event.key === 'Escape' && this.currentScreen !== 'v-start') this.showScreen('v-start')
+    if (event.key !== 'Escape') return
+    // Lock kabhi Escape se bypass nahi hoga; main screen par Escape = lock.
+    if (this.currentScreen === 'v-work-progress') this.lockNow()
   }
 
   private showScreen(screen: ScreenId): void {
     if (!document.getElementById(screen)) return
     this.clearTimers()
     this.refreshBell()
-    const passcode = this.container.querySelector<HTMLElement>('#passcode-overlay')
-    if (passcode) {
-      passcode.classList.remove('show')
-      passcode.hidden = true
+    // Gate overlay sirf v-code par ya setup ke liye khulta hai.
+    if (screen !== 'v-code') {
+      const overlay = this.container.querySelector<HTMLElement>('#passcode-overlay')
+      if (overlay && this.currentScreen !== 'v-work-progress') {
+        overlay.classList.remove('show')
+        overlay.hidden = true
+      }
     }
     if (screen === 'v-start') {
+      this.hidePasscodePopup()
       this.startSplashTimer()
     } else {
       this.clearSplashTimer()
     }
     this.currentScreen = screen
-    if (screen === 'v-signup') this.resetSignupWizard(this.signupPrefillIdentifier)
-    if (screen === 'v-work-progress') {
-      this.renderDashboard()
-      // Cloud se fresh profile lao, local se alag ho to dobara render karo
-      const me = authDB.getCurrentUser()
-      if (me) {
-        void authDB.fetchCloudProfile(me.id).then((cloud) => {
-          if (!cloud || this.currentScreen !== 'v-work-progress') return
-          const fresh = authDB.getCurrentUser()
-          if (fresh && (fresh.contact !== me.contact || fresh.loginCount !== me.loginCount)) {
-            this.renderDashboard()
-          }
-        })
-      }
-    }
+    if (screen === 'v-code') this.openGate()
+    if (screen === 'v-work-progress') this.renderMain()
     this.container.querySelectorAll<HTMLElement>('.view').forEach(view => {
       const active = view.id === screen
       view.classList.toggle('show', active)
@@ -486,107 +276,15 @@ export class AuthUI {
     window.scrollTo({ top: 0, behavior: 'smooth' })
   }
 
-  private async toggleNotifications(): Promise<void> {
-    if (!notifySupported()) {
-      this.showToast({ message: 'Notifications are not supported here.', type: 'error' })
-      return
-    }
-    if (!window.isSecureContext) {
-      this.showToast({ message: 'Notifications need HTTPS or localhost — insecure http par Chrome permission nahi deta.', type: 'error' })
-      return
-    }
-    if (prefEnabled() && currentPermission() === 'granted') {
-      setPref(false)
-      this.refreshBell()
-      this.showToast({ message: 'Notifications off.', type: 'info' })
-      return
-    }
-    const result = await enableNotifications()
-    this.refreshBell()
-    if (result === 'granted') {
-      this.showToast({ message: 'Notifications on.', type: 'success' })
-      void pushLocal('HASAN TECH STUDIO', 'Mast alerts are live.')
-    } else if (result === 'denied') {
-      this.showToast({ message: 'Blocked — allow notifications in site settings.', type: 'error' })
-    }
-  }
-
-  private refreshBell(): void {
-    const bell = this.container.querySelector<HTMLElement>('.notify-bell')
-    if (!bell) return
-    const on = prefEnabled() && currentPermission() === 'granted'
-    bell.classList.toggle('is-on', on)
-    bell.setAttribute('aria-label', on ? 'Disable notifications' : 'Enable notifications')
-    bell.innerHTML = on ? BELL_ON_ICON : BELL_OFF_ICON
-    bell.oncontextmenu = (event) => {
-      event.preventDefault()
-      void this.sendTestNotifications()
-    }
-  }
-
-  private async sendTestNotifications(): Promise<void> {
-    if (!prefEnabled() || currentPermission() !== 'granted') {
-      this.showToast({ message: 'Turn notifications on first (tap the bell).', type: 'warning' })
-      return
-    }
-    this.showToast({ message: '3 test notifications on the way.', type: 'info' })
-    const tests: Array<[string, string, string]> = [
-      ['HASAN TECH STUDIO', 'Test 1 — welcome to HTS alerts.', 'hts-test-1'],
-      ['HASAN TECH STUDIO', 'Test 2 — logins, code gate aur updates ki khabar yahin milegi.', 'hts-test-2'],
-      ['HASAN TECH STUDIO', 'Test 3 — is notification par tap karo, app khulni chahiye.', 'hts-test-3'],
-    ]
-    this.testNotificationTimers.forEach((timer) => clearTimeout(timer))
-    this.testNotificationTimers = []
-    tests.forEach(([title, body, tag], index) => {
-      const timer = window.setTimeout(() => {
-        void pushLocal(title, body, tag)
-      }, index * 2000)
-      this.testNotificationTimers.push(timer)
-    })
-  }
-
-  private resetSignupWizard(prefillIdentifier = ''): void {
-    const form = this.container.querySelector<HTMLFormElement>('#signup-form')
-    form?.reset()
-    this.signupStep = 0
-    const email = this.container.querySelector<HTMLInputElement>('#su-email')
-    const contact = this.container.querySelector<HTMLInputElement>('#su-contact')
-    if (prefillIdentifier.includes('@')) {
-      if (email) email.value = prefillIdentifier
-    } else if (prefillIdentifier) {
-      if (contact) contact.value = prefillIdentifier
-    }
-    this.updateSignupRoller()
-  }
-
-  private restoreRememberedSession(): void {
-    const user = authDB.getCurrentUser()
-    if (!user) return
-    const loginIdentifier = this.container.querySelector<HTMLInputElement>('#li-id')
-    if (loginIdentifier) {
-      loginIdentifier.value = user.email
-      loginIdentifier.dispatchEvent(new Event('input', { bubbles: true }))
-    }
-    this.setBotMood('happy')
-    this.showBotBubble('welcome back')
-    this.showToast({ message: `✅ Remembered session for ${user.name || user.email}`, type: 'success' })
-    this.showScreen('v-work-progress')
-  }
+  // ---- Splash ----
 
   private startSplashTimer(): void {
     this.clearSplashTimer()
     this.splashTimer = window.setTimeout(() => {
       this.splashTimer = undefined
       if (this.currentScreen !== 'v-start') return
-      const user = authDB.getCurrentUser()
-      if (user && authDB.hasPasscode(user.id)) {
-        this.showPasscodePopup()
-      } else if (user) {
-        this.restoreRememberedSession()
-      } else {
-        this.showScreen('v-login')
-      }
-    }, 10000)
+      this.showScreen('v-code')
+    }, 3500)
   }
 
   private clearSplashTimer(): void {
@@ -598,24 +296,18 @@ export class AuthUI {
   private clearTimers(): void {
     if (this.botBubbleTimer !== undefined) clearTimeout(this.botBubbleTimer)
     this.botBubbleTimer = undefined
-    if (this.botBubbleSequenceTimer !== undefined) clearTimeout(this.botBubbleSequenceTimer)
-    this.botBubbleSequenceTimer = undefined
     if (this.avatarRevealTimer !== undefined) clearTimeout(this.avatarRevealTimer)
     this.avatarRevealTimer = undefined
     if (this.avatarHideTimer !== undefined) clearTimeout(this.avatarHideTimer)
     this.avatarHideTimer = undefined
     if (this.avatarCloseTimer !== undefined) clearTimeout(this.avatarCloseTimer)
     this.avatarCloseTimer = undefined
-    if (this.signupFocusTimer !== undefined) clearTimeout(this.signupFocusTimer)
-    this.signupFocusTimer = undefined
     if (this.splashTimer !== undefined) clearTimeout(this.splashTimer)
     this.splashTimer = undefined
     if (this.passcodeFocusTimer !== undefined) clearTimeout(this.passcodeFocusTimer)
     this.passcodeFocusTimer = undefined
     if (this.passcodeResetTimer !== undefined) clearTimeout(this.passcodeResetTimer)
     this.passcodeResetTimer = undefined
-    if (this.loginFlashTimer !== undefined) clearTimeout(this.loginFlashTimer)
-    this.loginFlashTimer = undefined
     if (this.botFlashTimer !== undefined) clearTimeout(this.botFlashTimer)
     this.botFlashTimer = undefined
     if (this.botFallTimer !== undefined) clearTimeout(this.botFallTimer)
@@ -624,10 +316,6 @@ export class AuthUI {
     this.botFallResetTimer = undefined
     if (this.botIdleRevertTimer !== undefined) clearTimeout(this.botIdleRevertTimer)
     this.botIdleRevertTimer = undefined
-    if (this.testNotificationTimers.length > 0) {
-      this.testNotificationTimers.forEach((timer) => clearTimeout(timer))
-      this.testNotificationTimers = []
-    }
   }
 
   /** Tear down timers, animations, and global listeners when the UI is unmounted. */
@@ -640,80 +328,44 @@ export class AuthUI {
     this.stopBotIdleAnimation?.()
     this.stopBotIdleAnimation = undefined
     document.removeEventListener('keydown', this.handleEscape)
-    if (this.mouseTilt) {
-      document.removeEventListener('mousemove', this.mouseTilt.handler)
-      this.mouseTilt.cancel()
-      this.mouseTilt = undefined
-    }
-    this.touchTilts.forEach(({ card, handler, cancel }) => {
-      card.removeEventListener('touchmove', handler)
-      cancel()
-    })
-    this.touchTilts = []
     if (this.containerClickHandler) {
       this.container.removeEventListener('click', this.containerClickHandler)
       this.containerClickHandler = undefined
-    }
-    if (this.containerSubmitHandler) {
-      this.container.removeEventListener('submit', this.containerSubmitHandler)
-      this.containerSubmitHandler = undefined
     }
     this.storageUnavailableUnsubscribe?.()
     this.storageUnavailableUnsubscribe = undefined
   }
 
-  /** Persist the fingerprint store with a friendly warning when storage is blocked. */
-  private persistFpStore(store: Record<string, string>): void {
-    try {
-      localStorage.setItem(FP_CRED_KEY, JSON.stringify(store))
-    } catch {
-      this.showToast({ message: STORAGE_UNAVAILABLE_MESSAGE, type: 'warning' })
-    }
+  // ---- Code gate (splash ke baad pehli screen) ----
+
+  /** Pehli baar code set hota hai, uske baad har baar verify + fingerprint-first. */
+  private openGate(): void {
+    if (authDB.hasPasscode()) this.showPasscodePopup()
+    else this.openPasscodeSetup()
   }
 
-  /**
-   * Disable a submit button and show PBKDF2 progress while `action` runs,
-   * then restore the original label and enabled state.
-   */
-  private async withBusyButton<T>(button: HTMLButtonElement | null, action: () => Promise<T>): Promise<T> {
-    if (!button) return action()
-    const originalHTML = button.innerHTML
-    const wasDisabled = button.disabled
-    button.disabled = true
-    button.classList.add('is-busy')
-    button.setAttribute('aria-busy', 'true')
-    button.innerHTML = `<span>${SECURING_DATA_LABEL}</span>`
-    try {
-      return await action()
-    } finally {
-      button.disabled = wasDisabled
-      button.classList.remove('is-busy')
-      button.removeAttribute('aria-busy')
-      button.innerHTML = originalHTML
-    }
+  private lockNow(): void {
+    this.setBotMood('idle')
+    this.showToast({ message: '🔒 Locked.', type: 'info' })
+    this.showScreen('v-code')
   }
 
-  private setPasscodeCopy(title: string, sub: string, showAlt: boolean): void {
+  private setPasscodeCopy(title: string, sub: string): void {
     const titleEl = this.container.querySelector<HTMLElement>('#passcode-title')
     if (titleEl) titleEl.textContent = title
     const subEl = this.container.querySelector<HTMLElement>('.passcode-sub')
     if (subEl) subEl.textContent = sub
-    const alt = this.container.querySelector<HTMLElement>('.passcode-alt')
-    if (alt) alt.hidden = !showAlt
-    const fp = this.container.querySelector<HTMLElement>('#fp-button')
-    if (fp) fp.hidden = !showAlt
   }
 
-  /** Open the app-lock code in "set a new code" mode (from the dashboard). */
+  /** First-run + "Change access code": naya 6-digit code set karo. */
   private openPasscodeSetup(): void {
-    const user = authDB.getCurrentUser()
     const overlay = this.container.querySelector<HTMLElement>('#passcode-overlay')
     const input = this.container.querySelector<HTMLInputElement>('#passcode-input')
     const error = this.container.querySelector<HTMLElement>('#passcode-error')
-    if (!user || !overlay || !input) return
+    if (!overlay || !input) return
     this.passcodeMode = 'set'
     this.pendingPasscode = ''
-    this.setPasscodeCopy('Set access code', 'Choose a 6-digit code', false)
+    this.setPasscodeCopy('Set access code', 'Choose a 6-digit code')
     if (error) error.hidden = true
     input.value = ''
     this.updatePasscodeDots('')
@@ -734,7 +386,7 @@ export class AuthUI {
     if (!overlay || !input) return
     this.passcodeMode = 'verify'
     this.pendingPasscode = ''
-    this.setPasscodeCopy('Enter Code', 'Fill your 6-digit access code', true)
+    this.setPasscodeCopy('Enter Code', 'Fill your 6-digit access code')
     if (error) error.hidden = true
     input.value = ''
     this.updatePasscodeDots('')
@@ -742,8 +394,9 @@ export class AuthUI {
     overlay.hidden = false
     void overlay.offsetWidth
     overlay.classList.add('show')
+    // Fingerprint FIRST — sensor prompt auto, fail ho to code se kholo.
     void this.refreshFingerprintButton().then(() => this.autoFingerprint())
-    if (!this.fpCredentialIdForCurrentUser()) {
+    if (!readFpCredentialId()) {
       if (this.passcodeFocusTimer !== undefined) clearTimeout(this.passcodeFocusTimer)
       this.passcodeFocusTimer = window.setTimeout(() => {
         this.passcodeFocusTimer = undefined
@@ -773,25 +426,26 @@ export class AuthUI {
     const input = this.container.querySelector<HTMLInputElement>('#passcode-input')
     if (!input) return
     const value = input.value
+    if (value.length !== 6) return
     if (this.passcodeMode === 'set') {
       this.pendingPasscode = value
       this.passcodeMode = 'confirm'
-      this.setPasscodeCopy('Confirm access code', 'Re-enter your 6-digit code', false)
+      this.setPasscodeCopy('Confirm access code', 'Re-enter your 6-digit code')
       input.value = ''
       this.updatePasscodeDots('')
+      input.focus({ preventScroll: true })
       return
     }
     if (this.passcodeMode === 'confirm') {
-      const user = authDB.getCurrentUser()
-      if (user && value === this.pendingPasscode) {
+      if (value === this.pendingPasscode) {
         try {
-          await authDB.setPasscode(user.id, value)
-          this.hidePasscodePopup()
+          await authDB.setPasscode(value)
           this.pendingPasscode = ''
           this.passcodeMode = 'verify'
+          this.hidePasscodePopup()
           this.showToast({ message: '✅ Access code saved.', type: 'success' })
           void pushLocal('HASAN TECH STUDIO', 'Access code saved.')
-          if (this.currentScreen === 'v-work-progress') this.renderDashboard()
+          this.unlock()
         } catch (error) {
           this.showToast({ message: this.errorMessage(error), type: 'error' })
         }
@@ -799,12 +453,47 @@ export class AuthUI {
         this.passcodeError('Codes do not match. Start again.')
         this.passcodeMode = 'set'
         this.pendingPasscode = ''
-        this.setPasscodeCopy('Set access code', 'Choose a 6-digit code', false)
+        this.setPasscodeCopy('Set access code', 'Choose a 6-digit code')
         this.resetPasscodeInput(input)
       }
       return
     }
     await this.verifyPasscode()
+  }
+
+  private async verifyPasscode(): Promise<void> {
+    const input = this.container.querySelector<HTMLInputElement>('#passcode-input')
+    if (!input) return
+    try {
+      if (await authDB.verifyPasscode(input.value)) {
+        input.value = ''
+        this.updatePasscodeDots('')
+        this.hidePasscodePopup()
+        this.unlock()
+        return
+      }
+    } catch (error) {
+      this.showToast({ message: this.errorMessage(error), type: 'error' })
+      return
+    }
+    if (input.value.length === 6) {
+      this.setBotMood('worried')
+      this.flashBot('bot-error')
+      this.passcodeError('Wrong code, try again')
+      this.showToast({ message: '❌ Wrong code, try again', type: 'error' })
+      this.resetPasscodeInput(input)
+    }
+  }
+
+  /** Gate khul gaya — main screen par jao. */
+  private unlock(): void {
+    if ('vibrate' in navigator) navigator.vibrate(18)
+    this.setBotMood('happy')
+    this.flashBot('bot-success')
+    this.showBotBubble('unlocked 🔓')
+    this.showToast({ message: '✅ Unlocked!', type: 'success' })
+    void pushLocal('HASAN TECH STUDIO', 'Unlocked.')
+    this.showScreen('v-work-progress')
   }
 
   private resetPasscodeInput(input: HTMLInputElement): void {
@@ -832,6 +521,8 @@ export class AuthUI {
     })
   }
 
+  // ---- Fingerprint (WebAuthn platform authenticator, single device) ----
+
   private async fingerprintSupported(): Promise<boolean> {
     try {
       if (!window.isSecureContext) return false
@@ -852,13 +543,6 @@ export class AuthUI {
     if (label) label.hidden = !ok
   }
 
-  private fpCredentialIdForCurrentUser(): string | null {
-    const user = authDB.getCurrentUser()
-    if (!user) return null
-    const stored = readFpStore()[user.id]
-    return typeof stored === 'string' && stored ? stored : null
-  }
-
   private registerFpStrike(): void {
     this.fpAttempts += 1
     if (this.fpAttempts < FP_MAX_ATTEMPTS) return
@@ -869,16 +553,16 @@ export class AuthUI {
     this.showToast({ message: 'Use your code instead.', type: 'info' })
   }
 
-  private async registerFingerprint(userId: string, userName: string): Promise<void> {
+  private async registerFingerprint(): Promise<void> {
     if (!navigator.credentials) throw new Error('WebAuthn is unavailable.')
     const credential = (await navigator.credentials.create({
       publicKey: {
         challenge: crypto.getRandomValues(new Uint8Array(32)),
         rp: { name: 'HASAN TECH STUDIO' },
         user: {
-          id: new TextEncoder().encode(userId).slice(0, 64),
-          name: userId,
-          displayName: userName || userId,
+          id: new TextEncoder().encode('hts-local-user'),
+          name: 'hts-local-user',
+          displayName: 'HTS user',
         },
         pubKeyCredParams: [
           { type: 'public-key', alg: -7 },
@@ -890,10 +574,8 @@ export class AuthUI {
       },
     })) as PublicKeyCredential | null
     if (!credential) throw new Error('Registration failed.')
-    const store = readFpStore()
-    store[userId] = bufferToBase64url(credential.rawId)
     try {
-      localStorage.setItem(FP_CRED_KEY, JSON.stringify(store))
+      writeFpCredentialId(bufferToBase64url(credential.rawId))
     } catch {
       this.showToast({ message: STORAGE_UNAVAILABLE_MESSAGE, type: 'warning' })
       throw new Error('Storage unavailable.')
@@ -913,10 +595,9 @@ export class AuthUI {
     if (!result) throw new Error('Authentication failed.')
   }
 
-  private async handleFingerprint(): Promise<void> {
+  /** Gate par fingerprint button — success = unlock. */
+  private async handleGateFingerprint(): Promise<void> {
     if (this.isFpBusy) return
-    const user = authDB.getCurrentUser()
-    if (!user) return
     if (!(await this.fingerprintSupported())) {
       this.showToast({ message: 'Fingerprint is not available on this device.', type: 'error' })
       return
@@ -925,16 +606,15 @@ export class AuthUI {
     const button = this.container.querySelector<HTMLElement>('#fp-button')
     button?.classList.add('fp-busy')
     try {
-      const existing = this.fpCredentialIdForCurrentUser()
+      const existing = readFpCredentialId()
       if (existing) {
         try {
           await this.authenticateFingerprint(existing)
         } catch (error) {
           if (error instanceof DOMException && (error.name === 'NotFoundError' || error.name === 'InvalidStateError')) {
-            const store = readFpStore()
-            delete store[user.id]
-            this.persistFpStore(store)
+            writeFpCredentialId(null)
             this.showToast({ message: 'Fingerprint changed — tap again to register.', type: 'warning' })
+            if (this.currentScreen === 'v-work-progress') this.renderMain()
             return
           }
           this.registerFpStrike()
@@ -943,7 +623,7 @@ export class AuthUI {
       } else {
         this.showToast({ message: 'Touch the sensor to register your fingerprint.', type: 'info' })
         try {
-          await this.registerFingerprint(user.id, user.name)
+          await this.registerFingerprint()
           void pushLocal('HASAN TECH STUDIO', 'Fingerprint registered.')
         } catch (error) {
           this.registerFpStrike()
@@ -952,7 +632,7 @@ export class AuthUI {
       }
       this.hidePasscodePopup()
       void pushLocal('HASAN TECH STUDIO', 'Unlocked with fingerprint.')
-      this.restoreRememberedSession()
+      this.unlock()
     } catch (error) {
       if (error instanceof DOMException && (error.name === 'NotAllowedError' || error.name === 'AbortError')) {
         // Silent cancel/deny — code card is already there, zero irritation.
@@ -965,13 +645,12 @@ export class AuthUI {
     }
   }
 
+  /** Gate khulne par fingerprint AUTO try — fail ho to chup-chaap code se kholo. */
   private async autoFingerprint(): Promise<void> {
     if (this.isFpBusy) return
     const overlay = this.container.querySelector<HTMLElement>('#passcode-overlay')
     if (!overlay || overlay.hidden) return
-    const user = authDB.getCurrentUser()
-    if (!user) return
-    const existing = this.fpCredentialIdForCurrentUser()
+    const existing = readFpCredentialId()
     if (!existing) return
     if (!(await this.fingerprintSupported())) return
     const button = this.container.querySelector<HTMLElement>('#fp-button')
@@ -981,12 +660,10 @@ export class AuthUI {
       await this.authenticateFingerprint(existing)
       this.hidePasscodePopup()
       void pushLocal('HASAN TECH STUDIO', 'Unlocked with fingerprint.')
-      this.restoreRememberedSession()
+      this.unlock()
     } catch (error) {
       if (error instanceof DOMException && (error.name === 'NotFoundError' || error.name === 'InvalidStateError')) {
-        const store = readFpStore()
-        delete store[user.id]
-        this.persistFpStore(store)
+        writeFpCredentialId(null)
       } else {
         this.registerFpStrike()
       }
@@ -997,206 +674,89 @@ export class AuthUI {
     }
   }
 
-  private async verifyPasscode(): Promise<void> {
-    const input = this.container.querySelector<HTMLInputElement>('#passcode-input')
-    if (!input) return
-    const user = authDB.getCurrentUser()
-    if (user && (await authDB.verifyPasscode(user.id, input.value))) {
-      input.value = ''
-      this.updatePasscodeDots('')
-      this.hidePasscodePopup()
-      void pushLocal('HASAN TECH STUDIO', 'Unlocked with access code.')
-      this.restoreRememberedSession()
+  /** Main screen par fingerprint button — register ya test. */
+  private async handleMainFingerprint(): Promise<void> {
+    if (this.isFpBusy) return
+    if (!(await this.fingerprintSupported())) {
+      this.showToast({ message: 'Fingerprint is not available on this device.', type: 'error' })
       return
     }
-    if (input.value.length === 6) {
-      this.passcodeError('Wrong code, try again')
-      this.showToast({ message: '❌ Wrong code, try again', type: 'error' })
-      this.resetPasscodeInput(input)
-    }
-  }
-
-  private logout(): void {
-    authDB.logout()
-    this.signupPrefillIdentifier = ''
-    const identifier = this.container.querySelector<HTMLInputElement>('#li-id')
-    const password = this.container.querySelector<HTMLInputElement>('#li-pw')
-    if (identifier) {
-      identifier.value = ''
-      identifier.dispatchEvent(new Event('input', { bubbles: true }))
-    }
-    if (password) {
-      password.value = ''
-      password.dispatchEvent(new Event('input', { bubbles: true }))
-    }
-    this.setBotMood('idle')
-    this.showToast({ message: '👋 You have been logged out.', type: 'info' })
-    this.showScreen('v-login')
-  }
-
-  private updateSignupRoller(): void {
-    const track = this.container.querySelector<HTMLElement>('#signup-track')
-    if (!track) return
-    track.style.setProperty('--signup-step', String(this.signupStep))
-    this.container.querySelectorAll<HTMLElement>('.signup-step').forEach((step, index) => {
-      const active = index === this.signupStep
-      step.classList.toggle('is-active', active)
-      step.setAttribute('aria-hidden', String(!active))
-    })
-    const count = this.container.querySelector<HTMLElement>('.signup-progress-count')
-    if (count) count.textContent = `${this.signupStep + 1} / 6`
-    const dots = this.container.querySelector<HTMLElement>('.signup-progress-dots')
-    if (dots) dots.innerHTML = Array.from({ length: 6 }, (_, index) => `<i class="${index <= this.signupStep ? 'is-on' : ''}"></i>`).join('')
-    const activeInput = this.container.querySelector<HTMLInputElement>(`.signup-step[data-signup-step="${this.signupStep}"] input`)
-    if (this.signupFocusTimer !== undefined) clearTimeout(this.signupFocusTimer)
-    this.signupFocusTimer = window.setTimeout(() => {
-      this.signupFocusTimer = undefined
-      activeInput?.focus({ preventScroll: true })
-    }, 260)
-  }
-
-  private validateSignupStep(step: number): boolean {
-    const value = (selector: string): string => this.container.querySelector<HTMLInputElement>(selector)?.value.trim() || ''
-    if (step === 0 && value('#su-name').length < 3) {
-      this.showToast({ message: '❌ Tell me your full name', type: 'error' })
-      return false
-    }
-    if (step === 1 && !isValidContact(value('#su-contact'))) {
-      this.showToast({ message: '❌ Enter a valid contact number', type: 'error' })
-      return false
-    }
-    if (step === 2 && !isValidEmail(value('#su-email'))) {
-      this.showToast({ message: '❌ Enter a valid email ID', type: 'error' })
-      return false
-    }
-    if (step === 3 && value('#su-password').length < 6) {
-      this.showToast({ message: '❌ Secret must be at least 6 characters', type: 'error' })
-      return false
-    }
-    if (step === 4 && value('#su-confirm-password') !== value('#su-password')) {
-      this.showToast({ message: '❌ Your secrets do not match', type: 'error' })
-      return false
-    }
-    if (step === 5 && !this.container.querySelector<HTMLInputElement>('#su-terms')?.checked) {
-      this.showToast({ message: '❌ Please agree before joining', type: 'error' })
-      return false
-    }
-    return true
-  }
-
-  private advanceSignupStep(): void {
-    if (!this.validateSignupStep(this.signupStep)) return
-    this.signupStep = Math.min(5, this.signupStep + 1)
-    this.updateSignupRoller()
-  }
-
-  private retreatSignupStep(): void {
-    this.signupStep = Math.max(0, this.signupStep - 1)
-    this.updateSignupRoller()
-  }
-
-  private togglePassword(button: HTMLElement): void {
-    const input = document.getElementById(button.dataset.target || '') as HTMLInputElement | null
-    if (!input) return
-    const showing = input.type === 'password'
-    input.type = showing ? 'text' : 'password'
-    button.setAttribute('aria-label', showing ? 'Hide password' : 'Show password')
-    button.classList.toggle('is-visible', showing)
-    button.innerHTML = showing ? EYE_ON_ICON : EYE_OFF_ICON
-    const icon = button.querySelector<HTMLElement>('.eye-icon')
-    if (icon) {
-      icon.classList.remove('eye-pop')
-      void icon.offsetWidth
-      icon.classList.add('eye-pop')
-    }
-    if (input.id === 'li-pw') {
-      const mirror = this.container.querySelector<HTMLElement>('#mirror-li-pw')
-      if (mirror) this.paintMirror(input, mirror, true)
-    }
-    input.focus({ preventScroll: true })
-  }
-
-  private paintMirror(input: HTMLInputElement, mirror: HTMLElement, isPassword: boolean): void {
-    mirror.replaceChildren()
-    const maxChars = isPassword ? 18 : 26
-    const minScale = isPassword ? .72 : .5
-    const textScale = input.value ? Math.max(minScale, Math.min(1, maxChars / input.value.length)) : 1
-    mirror.style.setProperty('--mirror-scale', `${textScale}`)
-    let wordIndex = 0
-    input.value.split(/(\s+)/).forEach((part) => {
-      if (!part) return
-      if (/^\s+$/.test(part)) {
-        mirror.append(document.createTextNode(part))
-        return
+    const existing = readFpCredentialId()
+    if (!existing) {
+      this.showToast({ message: 'Touch the sensor to register your fingerprint.', type: 'info' })
+      this.isFpBusy = true
+      try {
+        await this.registerFingerprint()
+        this.showToast({ message: '✅ Fingerprint registered.', type: 'success' })
+        void pushLocal('HASAN TECH STUDIO', 'Fingerprint registered.')
+        this.renderMain()
+      } catch (error) {
+        if (!(error instanceof DOMException && (error.name === 'NotAllowedError' || error.name === 'AbortError'))) {
+          this.showToast({ message: this.errorMessage(error), type: 'error' })
+        }
+      } finally {
+        this.isFpBusy = false
       }
-      const word = document.createElement('span')
-      word.className = 'w'
-      word.style.setProperty('--word-index', `${wordIndex++}`)
-      word.textContent = isPassword && input.type === 'password' ? '•'.repeat(part.length) : part
-      mirror.append(word)
-    })
-  }
-
-  private updatePencil(input: HTMLInputElement): void {
-    input.parentElement?.classList.toggle('has-value', input.value.length > 0)
-  }
-
-  private hapticFeedback(): void {
-    if ('vibrate' in navigator) navigator.vibrate([18, 35, 18])
-  }
-
-  private flashLoginFields(): void {
-    const fields = [
-      this.container.querySelector<HTMLInputElement>('#li-id'),
-      this.container.querySelector<HTMLInputElement>('#li-pw'),
-    ].filter((field): field is HTMLInputElement => field !== null)
-    const wrappers = fields.map(field => field.closest<HTMLElement>('.input-wrap')).filter((wrap): wrap is HTMLElement => wrap !== null)
-    wrappers.forEach((wrap) => {
-      wrap.classList.remove('input-error-fill')
-      void wrap.offsetWidth
-      wrap.classList.add('input-error-fill')
-    })
-    if (this.loginFlashTimer !== undefined) clearTimeout(this.loginFlashTimer)
-    this.loginFlashTimer = window.setTimeout(() => {
-      this.loginFlashTimer = undefined
-      fields.forEach((field) => {
-        field.value = ''
-        field.dispatchEvent(new Event('input', { bubbles: true }))
-      })
-      wrappers.forEach(wrap => wrap.classList.remove('input-error-fill'))
-    }, 1500)
-  }
-
-  private handlePlainPaste(event: ClipboardEvent, input: HTMLInputElement): void {
-    const pasted = event.clipboardData?.getData('text/plain').replace(/[\r\n]+/g, '')
-    if (pasted === undefined) return
-    event.preventDefault()
-    const start = input.selectionStart ?? input.value.length
-    const end = input.selectionEnd ?? start
-    input.setRangeText(pasted, start, end, 'end')
-    input.dispatchEvent(new Event('input', { bubbles: true }))
-  }
-
-  private updateBotFromInput(identifier: HTMLInputElement, password: HTMLInputElement): void {
-    const id = identifier.value.trim()
-    const pw = password.value
-    const validId = isValidIdentifier(id)
-    this.container.querySelector<HTMLElement>('.identifier-wrap')?.classList.toggle('input-valid', Boolean(validId && id))
-    this.container.querySelector<HTMLElement>('.password-wrap')?.classList.toggle('input-valid', pw.length >= 6)
-    this.container.querySelector<HTMLButtonElement>('.btn-enter')?.classList.toggle('is-ready', Boolean(validId && pw.length >= 6))
-    if (!id && !pw) {
-      return this.setBotMood('idle')
+      return
     }
-    if ((id && !validId) || (pw && pw.length < 6)) {
-      this.setBotMood('worried')
-    }
-    else if (validId && pw.length >= 6) {
+    this.isFpBusy = true
+    try {
+      await this.authenticateFingerprint(existing)
       this.setBotMood('happy')
-    }
-    else {
-      this.setBotMood('listening')
+      this.flashBot('bot-success')
+      this.showToast({ message: '✅ Fingerprint works!', type: 'success' })
+    } catch (error) {
+      if (error instanceof DOMException && (error.name === 'NotFoundError' || error.name === 'InvalidStateError')) {
+        writeFpCredentialId(null)
+        this.showToast({ message: 'Fingerprint changed — register again.', type: 'warning' })
+        this.renderMain()
+      } else if (!(error instanceof DOMException && (error.name === 'NotAllowedError' || error.name === 'AbortError'))) {
+        this.showToast({ message: this.errorMessage(error), type: 'error' })
+      }
+    } finally {
+      this.isFpBusy = false
     }
   }
+
+  // ---- Notifications (same one-click local bell) ----
+
+  private async toggleNotifications(): Promise<void> {
+    if (!notifySupported()) {
+      this.showToast({ message: 'Notifications are not supported here.', type: 'error' })
+      return
+    }
+    if (!window.isSecureContext) {
+      this.showToast({ message: 'Notifications need HTTPS or localhost.', type: 'error' })
+      return
+    }
+    if (prefEnabled() && currentPermission() === 'granted') {
+      setPref(false)
+      this.refreshBell()
+      this.showToast({ message: 'Notifications off.', type: 'info' })
+      if (this.currentScreen === 'v-work-progress') this.renderMain()
+      return
+    }
+    const result = await enableNotifications()
+    this.refreshBell()
+    if (result === 'granted') {
+      this.showToast({ message: 'Notifications on.', type: 'success' })
+      void pushLocal('HASAN TECH STUDIO', 'Alerts are live.')
+    } else if (result === 'denied') {
+      this.showToast({ message: 'Blocked — allow notifications in site settings.', type: 'error' })
+    }
+    if (this.currentScreen === 'v-work-progress') this.renderMain()
+  }
+
+  private refreshBell(): void {
+    const bell = this.container.querySelector<HTMLElement>('.notify-bell')
+    if (!bell) return
+    const on = prefEnabled() && currentPermission() === 'granted'
+    bell.classList.toggle('is-on', on)
+    bell.setAttribute('aria-label', on ? 'Disable notifications' : 'Enable notifications')
+    bell.innerHTML = on ? BELL_ON_ICON : BELL_OFF_ICON
+  }
+
+  // ---- Mascot (same companion, same moods) ----
 
   private revealAvatar(duration: number): void {
     const emblem = this.container.querySelector<HTMLElement>('.brand-emblem')
@@ -1254,24 +814,17 @@ export class AuthUI {
     }, duration)
   }
 
-  private showGreeting(): void {
-    if (this.botBubbleSequenceTimer !== undefined) clearTimeout(this.botBubbleSequenceTimer)
-    this.botBubbleSequenceTimer = undefined
-    const message = authDB.getCurrentUser() ? 'welcome back' : 'welcome to hasan tech studio'
-    this.showBotBubble(message, 3000)
-  }
-
   private startBotIdleAnimation(): void {
     this.stopBotIdleAnimation?.()
     this.stopBotIdleAnimation = startTimedLoop(() => {
       const bot = this.container.querySelector<HTMLElement>('.brand-emblem')
-      if (!bot || (this.currentScreen !== 'v-login' && this.currentScreen !== 'v-start') || this.isBotAnimating) return
+      if (!bot || this.currentScreen !== 'v-start' || this.isBotAnimating) return
       if (bot.dataset.mood && !['idle', 'curious'].includes(bot.dataset.mood)) return
       this.setBotMood('curious')
       if (this.botIdleRevertTimer !== undefined) clearTimeout(this.botIdleRevertTimer)
       this.botIdleRevertTimer = window.setTimeout(() => {
         this.botIdleRevertTimer = undefined
-        if ((this.currentScreen === 'v-login' || this.currentScreen === 'v-start') && !this.isBotAnimating && bot.dataset.mood === 'curious') this.setBotMood('idle')
+        if (this.currentScreen === 'v-start' && !this.isBotAnimating && bot.dataset.mood === 'curious') this.setBotMood('idle')
       }, 1200)
     }, 5200)
   }
@@ -1299,7 +852,7 @@ export class AuthUI {
     const emblem = this.container.querySelector<HTMLElement>('.brand-emblem')
     if (!emblem || this.isBotAnimating) return
     this.isBotAnimating = true
-    this.showGreeting()
+    this.showBotBubble('welcome to hasan tech studio', 3000)
     const previousMood = emblem.dataset.mood || 'idle'
     if (this.botFallTimer !== undefined) clearTimeout(this.botFallTimer)
     if (this.botFallResetTimer !== undefined) clearTimeout(this.botFallResetTimer)
@@ -1313,197 +866,34 @@ export class AuthUI {
     }, 900)
   }
 
-  private async handleLogin(form: HTMLFormElement): Promise<void> {
-    const data = new FormData(form)
-    const identifier = String(data.get('identifier') || '').trim()
-    const password = String(data.get('password') || '')
-    const validIdentifier = isValidIdentifier(identifier)
-    if (!validIdentifier) {
-      this.setBotMood('worried')
-      this.flashBot('bot-error')
-      this.flashLoginFields()
-      this.showToast({ message: '❌ Enter valid email or contact', type: 'error' })
-      return
-    }
-    if (password.length < 6) {
-      this.setBotMood('worried')
-      this.flashBot('bot-error')
-      this.flashLoginFields()
-      this.showToast({ message: '❌ Password min 6 chars', type: 'error' })
-      return
-    }
-    const submitButton = form.querySelector<HTMLButtonElement>('button[type="submit"]')
-    try {
-      const user = await this.withBusyButton(submitButton, () => authDB.login(identifier, password))
-      recordLoginDetail(identifier)
-      this.setBotMood('happy')
-      this.flashBot('bot-success')
-      this.showBotBubble('welcome back')
-      this.showToast({ message: `✅ Welcome back${user.name ? `, ${user.name}` : ''}!`, type: 'success' })
-      void pushLocal('HASAN TECH STUDIO', `Welcome back${user.name ? `, ${user.name}` : ''} — you are logged in.`)
-      this.showScreen('v-work-progress')
-    } catch (error) {
-      this.setBotMood('worried')
-      this.flashBot('bot-error')
-      this.flashLoginFields()
-      this.showToast({ message: this.errorMessage(error), type: 'error' })
-    }
-  }
-
-  private async handleSignup(form: HTMLFormElement): Promise<void> {
-    const data = new FormData(form)
-    const details: SignupDetails = {
-      name: String(data.get('name') || '').trim(),
-      contact: String(data.get('contact') || '').trim(),
-      email: String(data.get('email') || '').trim(),
-      password: String(data.get('password') || ''),
-    }
-    const confirmation = String(data.get('confirmPassword') || '')
-    const validEmail = isValidEmail(details.email)
-    const validContact = isValidContact(details.contact)
-    if (details.name.length < 3) return this.showToast({ message: '❌ Enter full name', type: 'error' })
-    if (!validContact) return this.showToast({ message: '❌ Invalid contact', type: 'error' })
-    if (!validEmail) return this.showToast({ message: '❌ Invalid email', type: 'error' })
-    if (details.password.length < 6) return this.showToast({ message: '❌ Password min 6 chars', type: 'error' })
-    if (details.password !== confirmation) return this.showToast({ message: '❌ Passwords not match', type: 'error' })
-    if (!this.container.querySelector<HTMLInputElement>('#su-terms')?.checked) return this.showToast({ message: '❌ Please agree to continue', type: 'error' })
-
-    const submitButton = form.querySelector<HTMLButtonElement>('button[type="submit"]')
-    try {
-      await this.withBusyButton(submitButton, () => authDB.createUser(details))
-      recordSignupDetail({ name: details.name, contact: details.contact, email: details.email })
-      const loginIdentifier = this.container.querySelector<HTMLInputElement>('#li-id')
-      if (loginIdentifier) {
-        loginIdentifier.value = details.email
-        loginIdentifier.dispatchEvent(new Event('input', { bubbles: true }))
-      }
-      this.signupPrefillIdentifier = ''
-      this.showToast({ message: `🎉 ${details.name}, account created! Check your email to verify.`, type: 'success' })
-      void pushLocal('HASAN TECH STUDIO', `Account created for ${details.name} — verify your email.`)
-      this.configureReverify(details.email)
-      this.showScreen('v-reverify')
-    } catch (error) {
-      this.showToast({ message: this.errorMessage(error), type: 'error' })
-    }
-  }
-
-  private configureReverify(identifier: string): void {
-    const email = identifier || authDB.getCurrentUser()?.email || ''
-    const title = this.container.querySelector<HTMLElement>('#reverify-title')
-    if (title) title.innerHTML = 'Verify your email ✉️<small>We sent a verification link to your inbox</small>'
-    const identifierInput = this.container.querySelector<HTMLInputElement>('#rv-id')
-    if (identifierInput) {
-      identifierInput.value = email
-      identifierInput.readOnly = true
-    }
-  }
-
-  /** "I've verified" — re-reads the Firebase user and checks the email flag. */
-  private async handleReverify(form: HTMLFormElement): Promise<void> {
-    if (!authDB.getCurrentUser()) {
-      this.showToast({ message: 'Sign in first, then verify your email.', type: 'warning' })
-      return
-    }
-    const submitButton = form.querySelector<HTMLButtonElement>('button[type="submit"]')
-    try {
-      const verified = await this.withBusyButton(submitButton, () => authDB.reloadVerification())
-      if (verified) {
-        this.showToast({ message: '✅ Email verified!', type: 'success' })
-        this.showScreen('v-work-progress')
-      } else {
-        this.showToast({ message: 'Not verified yet — open the link in your email, then try again.', type: 'warning' })
-      }
-    } catch (error) {
-      this.showToast({ message: this.errorMessage(error), type: 'error' })
-    }
-  }
-
-  /** Sends a Firebase password-reset email. */
-  async resetPasswordWithFeedback(identifier: string, button: HTMLButtonElement | null): Promise<void> {
-    try {
-      await this.withBusyButton(button, () => authDB.resetPassword(identifier))
-      this.showToast({ message: '✅ Password reset email sent.', type: 'success' })
-      this.showScreen('v-login')
-    } catch (error) {
-      this.showToast({ message: this.errorMessage(error), type: 'error' })
-    }
-  }
-
-  /** Login card ka "Forgot password?" — #li-id se email lekar reset link bhejta hai. */
-  private async handleForgotPassword(button: HTMLElement): Promise<void> {
-    const input = this.container.querySelector<HTMLInputElement>('#li-id')
-    const identifier = input?.value.trim() || ''
-    if (!identifier) {
-      this.showToast({ message: 'Pehle apna email ID likho, phir Forgot password dabao.', type: 'warning' })
-      input?.focus({ preventScroll: true })
-      return
-    }
-    await this.resetPasswordWithFeedback(identifier, button as HTMLButtonElement)
-  }
-
-  /** Sends (or resends) the Firebase email-verification link. */
-  private async sendOTP(): Promise<void> {
-    try {
-      await authDB.sendVerificationEmail()
-      const sendButton = this.container.querySelector<HTMLButtonElement>('[data-action="send-otp"]')
-      if (sendButton) {
-        sendButton.textContent = 'Sent ✓'
-        sendButton.classList.add('sent')
-      }
-      const email = authDB.getCurrentUser()?.email || ''
-      this.showToast({ message: `📩 Verification link sent${email ? ` to ${email}` : ''}.`, type: 'info' })
-    } catch (error) {
-      this.showToast({ message: this.errorMessage(error), type: 'error' })
-    }
-  }
-
   private errorMessage(error: unknown): string {
     return error instanceof Error ? error.message : 'Something went wrong. Please try again.'
   }
 
-  /** Fill the post-login screen with the signed-in user's details. */
-  private renderDashboard(): void {
+  /** Main screen — no accounts, just device security controls. */
+  private renderMain(): void {
     const mount = this.container.querySelector<HTMLElement>('.work-progress-screen')
     if (!mount) return
-    const user = authDB.getCurrentUser()
-    if (!user) {
-      mount.replaceChildren()
-      return
-    }
-    const fmt = (ts: number): string => (ts ? new Date(ts).toLocaleString() : '—')
-    const hasCode = authDB.hasPasscode(user.id)
-    const recent = getLoginDetails().slice(0, 5)
-    const activity = recent.length
-      ? `<ul class="dash-activity">${recent.map(item => `<li><span>${escapeHtml(item.identifier)}</span><time>${fmt(item.loggedInAt)}</time></li>`).join('')}</ul>`
-      : '<p class="dash-muted">No recent logins recorded.</p>'
+    const fpOn = readFpCredentialId() !== null
+    const notifyOn = prefEnabled() && currentPermission() === 'granted'
     mount.innerHTML = `
       <div class="dash">
-        <h1 class="dash-hello">Welcome back, ${escapeHtml(user.name || user.email)}</h1>
-        ${user.emailVerified ? '' : '<div class="dash-banner">Your email is not verified yet. <button class="dash-banner-btn" type="button" data-action="verify-email">Send verification email</button></div>'}
+        <h1 class="dash-hello">HASAN TECH STUDIO</h1>
+        <p class="dash-muted" style="text-align:center">Unlocked 🔓 — this device only, no accounts.</p>
         <div class="dash-grid">
           <section class="dash-card">
-            <h2>Profile</h2>
-            <dl class="dash-list">
-              <dt>Name</dt><dd>${escapeHtml(user.name)}</dd>
-              <dt>Email</dt><dd>${escapeHtml(user.email)}</dd>
-              <dt>Contact</dt><dd>${escapeHtml(user.contact)}</dd>
-              <dt>Member since</dt><dd>${fmt(user.createdAt)}</dd>
-              <dt>Logins</dt><dd>${user.loginCount}</dd>
-              <dt>Last login</dt><dd>${fmt(user.lastLoginAt)}</dd>
-            </dl>
+            <h2>Security</h2>
+            <p class="dash-muted">Access code: <b>set</b> · Fingerprint: <b>${fpOn ? 'on' : 'off'}</b></p>
+            <button class="dash-btn" type="button" data-action="set-passcode">Change access code</button>
+            <button class="dash-btn dash-btn-ghost" type="button" data-action="fingerprint">${fpOn ? 'Test fingerprint' : 'Enable fingerprint'}</button>
+            <button class="dash-btn dash-btn-danger" type="button" data-action="lock-now">Lock now</button>
           </section>
           <section class="dash-card">
-            <h2>Security</h2>
-            <p class="dash-muted">Access code: <b>${hasCode ? 'set' : 'not set'}</b></p>
-            <button class="dash-btn" type="button" data-action="set-passcode">${hasCode ? 'Change access code' : 'Set access code'}</button>
-            <button class="dash-btn dash-btn-ghost" type="button" data-action="notify-toggle">Notifications</button>
-            <button class="dash-btn dash-btn-danger" type="button" data-action="logout">Log out</button>
+            <h2>Notifications</h2>
+            <p class="dash-muted">App alerts are <b>${notifyOn ? 'on' : 'off'}</b>.</p>
+            <button class="dash-btn dash-btn-ghost" type="button" data-action="notify-toggle">${notifyOn ? 'Turn off' : 'Turn on'}</button>
           </section>
         </div>
-        <section class="dash-card">
-          <h2>Recent activity</h2>
-          ${activity}
-        </section>
       </div>`
   }
 

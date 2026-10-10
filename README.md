@@ -25,25 +25,17 @@ binds to all interfaces, so it works on Android without the crash.
 
 Signup and login metadata is stored in this browser (password-free) and can be read via the helpers in `src/LoginDetails.ts` and `src/SignupDetails.ts`.
 
-## Authentication (Firebase)
+## Authentication (device-only)
 
-Identity is handled by **Firebase Authentication** (project
-`hasan-tech-studio`), so accounts and sessions are server-managed and real
-verification / password-reset emails are sent.
+No accounts, no server, no backend. Unlock is purely on-device:
 
-- Create an account with name + contact + email + password; a verification
-  email is sent.
-- Sign in with your email and password.
-- Reset a password via the emailed link.
-- Restore the session on reload and sign out.
+- Splash → fingerprint unlock is tried first (WebAuthn platform authenticator).
+- Fingerprint unavailable/failed → 6-digit access code.
+- First launch asks you to set the code (old per-account codes are adopted automatically).
+- Main screen: change code, enable/test fingerprint, lock now, notifications.
 
-The **app-lock access code** (6-digit) is a local, per-device convenience lock
-(PBKDF2-hashed in this browser) — it is not an identity mechanism. The Firebase
-web config loads from `VITE_FIREBASE_*` environment variables (see
-`.env.example`; real values live in the gitignored `.env`). Those values are
-public client identifiers, and access is controlled by Firebase Security Rules
-and Authorized Domains.
+The 6-digit code is PBKDF2-hashed (210k iterations) in this browser's
+localStorage — it never leaves the device. Fingerprint data stays in the
+device authenticator via WebAuthn; only a credential id is kept locally.
 
 See `docs/ANDROID_SETUP.md` for packaging the PWA as an Android app.
-Backend dobara connect karna ho to step-by-step Hindi manual:
-`docs/BACKEND_SETUP_MANUAL.md`.
