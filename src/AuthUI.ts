@@ -346,7 +346,14 @@ export class AuthUI {
     void overlay.offsetWidth
     overlay.classList.add('show')
     // Fingerprint FIRST — sensor prompt auto, fail ho to code se kholo.
-    void this.refreshFingerprintButton().then(() => this.autoFingerprint())
+    void this.refreshFingerprintButton().then(() => {
+      void this.autoFingerprint()
+      // http (LAN IP) link par browser fingerprint allow nahi karta —
+      // user confuse na ho, isliye seedha bata do.
+      if (!window.isSecureContext) {
+        this.showToast({ message: 'Ye http link hai — fingerprint yahan nahi chalega. Vercel wala https link kholo, ya code se kholo.', type: 'warning', duration: 5000 })
+      }
+    })
     if (!readFpCredentialId()) {
       if (this.passcodeFocusTimer !== undefined) clearTimeout(this.passcodeFocusTimer)
       this.passcodeFocusTimer = window.setTimeout(() => {
