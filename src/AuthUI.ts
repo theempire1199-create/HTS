@@ -1,55 +1,19 @@
-import { authDB } from './AuthDB'
 import type { ScreenId, ToastOptions } from './index'
-import { focusFast, prefersReducedMotion, rafThrottle, startTimedLoop } from './PerformanceLayer'
+import { prefersReducedMotion, rafThrottle, startTimedLoop } from './PerformanceLayer'
 import { currentPermission, enableNotifications, notifySupported, onStorageUnavailable, prefEnabled, pushLocal, setPref } from './Notify'
-import {
-  FP_CRED_KEY,
-  FP_MAX_ATTEMPTS,
-  STORAGE_UNAVAILABLE_MESSAGE,
-} from './utils/constants'
-import { BELL_OFF_ICON, BELL_ON_ICON, FP_ICON } from './utils/icons'
+import { STORAGE_UNAVAILABLE_MESSAGE } from './utils/constants'
+import { BELL_OFF_ICON, BELL_ON_ICON } from './utils/icons'
+import { LockScreen } from './screens/LockScreen'
+import { MainScreen } from './screens/MainScreen'
 
-function bufferToBase64url(buffer: ArrayBuffer): string {
-  const bytes = new Uint8Array(buffer)
-  let binary = ''
-  bytes.forEach(byte => { binary += String.fromCharCode(byte) })
-  return btoa(binary).replace(/\+/g, '-').replace(/\//g, '_').replace(/=+$/, '')
-}
-
-function base64urlToBytes(value: string): Uint8Array {
-  const padded = value.replace(/-/g, '+').replace(/_/g, '/') + '='.repeat((4 - (value.length % 4)) % 4)
-  return Uint8Array.from(atob(padded), char => char.charCodeAt(0))
-}
-
-/** Single-device fingerprint credential id (tolerates the old per-uid map shape). */
-function readFpCredentialId(): string | null {
-  try {
-    const raw = localStorage.getItem(FP_CRED_KEY)
-    if (!raw) return null
-    const parsed: unknown = JSON.parse(raw)
-    if (typeof parsed === 'string' && parsed) return parsed
-    if (parsed && typeof parsed === 'object') {
-      for (const value of Object.values(parsed as Record<string, unknown>)) {
-        if (typeof value === 'string' && value) return value
-      }
-    }
-  } catch {
-    // Corrupt store reads as empty; re-registration fixes it.
-  }
-  return null
-}
-
-function writeFpCredentialId(id: string | null): void {
-  try {
-    if (id) localStorage.setItem(FP_CRED_KEY, JSON.stringify(id))
-    else localStorage.removeItem(FP_CRED_KEY)
-  } catch {
-    // Best-effort; caller shows a toast.
-  }
-}
-
+/**
+ * App shell: frame render, screen router, bell/notifications, toast, mascot.
+ * Screen flows live in ./screens (LockScreen, MainScreen) and wire up here.
+ */
 export class AuthUI {
   private readonly container: HTMLElement
+  private readonly lock: LockScreen
+  private readonly main: MainScreen
   private currentScreen: ScreenId = 'v-code'
   private toastTimeout: number | undefined
   private isBotAnimating = false
@@ -57,18 +21,12 @@ export class AuthUI {
   private avatarRevealTimer: number | undefined
   private avatarHideTimer: number | undefined
   private avatarCloseTimer: number | undefined
-  private passcodeResetTimer: number | undefined
   private botFlashTimer: number | undefined
   private botFallTimer: number | undefined
   private botFallResetTimer: number | undefined
   private botIdleRevertTimer: number | undefined
   private storageUnavailableUnsubscribe: (() => void) | undefined
   private containerClickHandler: ((event: Event) => void) | undefined
-  private passcodeMode: 'verify' | 'set' | 'confirm' = 'verify'
-  private pendingPasscode = ''
-  private passcodeResolving = false
-  private isFpBusy = false
-  private fpAttempts = 0
   private initialized = false
   private stopBotIdleAnimation: (() => void) | undefined
   private cancelGazeThrottle: (() => void) | undefined
@@ -76,12 +34,24 @@ export class AuthUI {
 
   constructor(container: HTMLElement) {
     this.container = container
+    this.lock = new LockScreen(container, {
+      toast: (options) => this.showToast(options),
+      onUnlock: () => this.unlock(),
+      onWrongCode: () => {
+        this.setBotMood('worried')
+        this.flashBot('bot-error')
+      },
+    })
+    this.main = new MainScreen(container, {
+      toast: (options) => this.showToast(options),
+    })
   }
 
   init(): void {
     if (this.initialized) return
     this.initialized = true
     this.render()
+    this.lock.ensureMounted()
     this.bindEvents()
     this.startBotIdleAnimation()
     this.refreshBell()
@@ -130,17 +100,6 @@ export class AuthUI {
       </main>
       <footer class="site-footer"><span class="powered-by">powered by</span><b>HASAN TECHNOLOGY PVT LTD</b></footer>
       <button class="notify-bell" type="button" data-action="notify-toggle" aria-label="Enable notifications">${BELL_OFF_ICON}</button>
-      <div class="passcode-overlay" id="passcode-overlay" hidden>
-        <div class="passcode-card" role="dialog" aria-modal="true" aria-labelledby="passcode-title">
-          <div class="passcode-title" id="passcode-title">Enter Code</div>
-          <div class="passcode-sub">Fill your 6-digit access code</div>
-          <div class="passcode-dots" id="passcode-dots" aria-hidden="true"><i></i><i></i><i></i><i></i><i></i><i></i></div>
-          <div class="input-wrap passcode-wrap"><input id="passcode-input" type="tel" inputmode="numeric" pattern="[0-9]*" autocomplete="one-time-code" enterkeyhint="done" autocapitalize="off" autocorrect="off" spellcheck="false" maxlength="6" placeholder="••••••" aria-label="6-digit access code"></div>
-          <div class="passcode-error" id="passcode-error" hidden>Wrong code, try again</div>
-          <button class="passcode-fp" id="fp-button" type="button" data-action="fingerprint" hidden aria-label="Unlock with fingerprint"><span class="passcode-fp-icon" aria-hidden="true">${FP_ICON}</span></button>
-          <button class="passcode-alt" type="button" hidden aria-hidden="true" tabindex="-1">try another way</button>
-        </div>
-      </div>
       <div id="toast" role="status" aria-live="polite"></div>
     `
     document.body.dataset.screen = this.currentScreen
@@ -190,33 +149,25 @@ export class AuthUI {
         if (screen === 'v-code' || screen === 'v-work-progress') this.showScreen(screen)
       }
       if (action === 'notify-toggle') void this.toggleNotifications()
-      if (action === 'fingerprint') {
-        // Gate (overlay) khula ho to unlock flow, main screen par ho to setup/test flow.
-        const overlay = this.container.querySelector<HTMLElement>('#passcode-overlay')
-        if (overlay && !overlay.hidden) void this.handleGateFingerprint()
-        else void this.handleMainFingerprint()
-      }
-      if (action === 'set-passcode') this.openPasscodeSetup()
+      if (action === 'fingerprint' && this.lock.isOpen()) void this.lock.handleGateFingerprint()
+      if (action === 'set-passcode') this.lock.openPasscodeSetup()
       if (action === 'lock-now') this.lockNow()
+      if (action === 'menu') this.main.openDrawer()
+      if (action === 'drawer-close') this.main.closeDrawer()
+      if (action === 'dashboard') this.main.openDashboard()
+      if (action === 'activity') this.main.openActivity()
+      if (action === 'profile') this.main.openProfile()
     }
     this.container.addEventListener('click', this.containerClickHandler)
-
-    const passcodeInput = this.container.querySelector<HTMLInputElement>('#passcode-input')
-    passcodeInput?.addEventListener('input', () => this.handlePasscodeInput())
-    passcodeInput?.addEventListener('keydown', (event) => {
-      if (event.key === 'Enter') void this.submitPasscode()
-    })
-    // Tap anywhere on the card = instant keyboard. Guard avoids re-focus flicker.
-    this.container.querySelector<HTMLElement>('.passcode-card')?.addEventListener('click', (event) => {
-      if ((event.target as HTMLElement | null)?.closest?.('#fp-button')) return
-      if (passcodeInput && document.activeElement !== passcodeInput) focusFast(passcodeInput)
-    })
 
     document.addEventListener('keydown', this.handleEscape)
   }
 
   private readonly handleEscape = (event: KeyboardEvent): void => {
     if (event.key !== 'Escape') return
+    // Sheet khula ho to pehle wahi, phir drawer; main screen par Escape = lock.
+    if (this.main.closeSheet()) return
+    if (this.main.closeDrawer()) return
     // Lock kabhi Escape se bypass nahi hoga; main screen par Escape = lock.
     if (this.currentScreen === 'v-work-progress') this.lockNow()
   }
@@ -226,16 +177,10 @@ export class AuthUI {
     this.clearTimers()
     this.refreshBell()
     // Gate overlay sirf v-code par ya setup ke liye khulta hai.
-    if (screen !== 'v-code') {
-      const overlay = this.container.querySelector<HTMLElement>('#passcode-overlay')
-      if (overlay && this.currentScreen !== 'v-work-progress') {
-        overlay.classList.remove('show')
-        overlay.hidden = true
-      }
-    }
+    if (screen !== 'v-code') this.lock.hidePopup()
     this.currentScreen = screen
-    if (screen === 'v-code') this.openGate()
-    if (screen === 'v-work-progress') this.renderMain()
+    if (screen === 'v-code') this.lock.openGate()
+    if (screen === 'v-work-progress') this.main.render()
     this.container.querySelectorAll<HTMLElement>('.view').forEach(view => {
       const active = view.id === screen
       view.classList.toggle('show', active)
@@ -261,8 +206,6 @@ export class AuthUI {
     this.avatarHideTimer = undefined
     if (this.avatarCloseTimer !== undefined) clearTimeout(this.avatarCloseTimer)
     this.avatarCloseTimer = undefined
-    if (this.passcodeResetTimer !== undefined) clearTimeout(this.passcodeResetTimer)
-    this.passcodeResetTimer = undefined
     if (this.botFlashTimer !== undefined) clearTimeout(this.botFlashTimer)
     this.botFlashTimer = undefined
     if (this.botFallTimer !== undefined) clearTimeout(this.botFallTimer)
@@ -276,6 +219,8 @@ export class AuthUI {
   /** Tear down timers, animations, and global listeners when the UI is unmounted. */
   destroy(): void {
     this.clearTimers()
+    this.lock.destroy()
+    this.main.destroy()
     if (this.toastTimeout !== undefined) {
       clearTimeout(this.toastTimeout)
       this.toastTimeout = undefined
@@ -293,161 +238,10 @@ export class AuthUI {
     this.storageUnavailableUnsubscribe = undefined
   }
 
-  // ---- Code gate (splash ke baad pehli screen) ----
-
-  /** Pehli baar code set hota hai, uske baad har baar verify + fingerprint-first. */
-  private openGate(): void {
-    if (authDB.hasPasscode()) this.showPasscodePopup()
-    else this.openPasscodeSetup()
-  }
-
   private lockNow(): void {
     this.setBotMood('idle')
     this.showToast({ message: '🔒 Locked.', type: 'info' })
     this.showScreen('v-code')
-  }
-
-  private setPasscodeCopy(title: string, sub: string): void {
-    const titleEl = this.container.querySelector<HTMLElement>('#passcode-title')
-    if (titleEl) titleEl.textContent = title
-    const subEl = this.container.querySelector<HTMLElement>('.passcode-sub')
-    if (subEl) subEl.textContent = sub
-  }
-
-  /** First-run + "Change access code": fingerprint + 6-digit code setup. */
-  private openPasscodeSetup(): void {
-    const overlay = this.container.querySelector<HTMLElement>('#passcode-overlay')
-    const input = this.container.querySelector<HTMLInputElement>('#passcode-input')
-    const error = this.container.querySelector<HTMLElement>('#passcode-error')
-    const card = this.container.querySelector<HTMLElement>('.passcode-card')
-    if (!overlay || !input) return
-    this.passcodeMode = 'set'
-    this.pendingPasscode = ''
-    this.passcodeResolving = false
-    card?.classList.remove('code-ok', 'code-error', 'passcode-shake')
-    this.setPasscodeCopy('Set access code', 'Choose a 6-digit code — ya 👆 se fingerprint lagao')
-    if (error) error.hidden = true
-    input.value = ''
-    this.updatePasscodeDots('')
-    overlay.hidden = false
-    void overlay.offsetWidth
-    overlay.classList.add('show')
-    // Setup me fingerprint button dikhao taaki pehli baar me hi dono set ho jayein.
-    void this.refreshFingerprintButton()
-    // No 200ms lag — rAF focus opens the keyboard within the tap.
-    focusFast(input)
-  }
-
-  private showPasscodePopup(): void {
-    const overlay = this.container.querySelector<HTMLElement>('#passcode-overlay')
-    const input = this.container.querySelector<HTMLInputElement>('#passcode-input')
-    const error = this.container.querySelector<HTMLElement>('#passcode-error')
-    const card = this.container.querySelector<HTMLElement>('.passcode-card')
-    if (!overlay || !input) return
-    this.passcodeMode = 'verify'
-    this.pendingPasscode = ''
-    this.passcodeResolving = false
-    card?.classList.remove('code-ok', 'code-error', 'passcode-shake')
-    this.setPasscodeCopy('Enter Code', 'Fill your 6-digit access code')
-    if (error) error.hidden = true
-    input.value = ''
-    this.updatePasscodeDots('')
-    this.fpAttempts = 0
-    overlay.hidden = false
-    void overlay.offsetWidth
-    overlay.classList.add('show')
-    // Fingerprint FIRST — sensor prompt auto, fail ho to code se kholo.
-    void this.refreshFingerprintButton().then(() => {
-      void this.autoFingerprint()
-      // http (LAN IP) link par browser fingerprint allow nahi karta —
-      // user confuse na ho, isliye seedha bata do.
-      if (!window.isSecureContext) {
-        this.showToast({ message: 'Ye http link hai — fingerprint yahan nahi chalega. Vercel wala https link kholo, ya code se kholo.', type: 'warning', duration: 5000 })
-      }
-    })
-    if (!readFpCredentialId()) {
-      // Fingerprint not registered — focus instantly via rAF, no 350ms wait.
-      focusFast(input)
-    }
-  }
-
-  private hidePasscodePopup(): void {
-    const overlay = this.container.querySelector<HTMLElement>('#passcode-overlay')
-    if (!overlay) return
-    overlay.classList.remove('show')
-    overlay.hidden = true
-  }
-
-  private handlePasscodeInput(): void {
-    const input = this.container.querySelector<HTMLInputElement>('#passcode-input')
-    if (!input) return
-    // Only rewrite when filtering actually changed something — avoids cursor
-    // jump / keyboard flicker that feels like a "glitch" while typing fast.
-    const clean = input.value.replace(/\D/g, '').slice(0, 6)
-    if (clean !== input.value) input.value = clean
-    this.updatePasscodeDots(clean)
-    const error = this.container.querySelector<HTMLElement>('#passcode-error')
-    if (error) error.hidden = true
-    if (clean.length === 6) void this.submitPasscode()
-  }
-
-  private async submitPasscode(): Promise<void> {
-    const input = this.container.querySelector<HTMLInputElement>('#passcode-input')
-    if (!input || this.passcodeResolving) return
-    const value = input.value
-    if (value.length !== 6) return
-    if (this.passcodeMode === 'set') {
-      this.pendingPasscode = value
-      this.passcodeMode = 'confirm'
-      this.setPasscodeCopy('Confirm access code', 'Re-enter your 6-digit code')
-      input.value = ''
-      this.updatePasscodeDots('')
-      focusFast(input)
-      return
-    }
-    if (this.passcodeMode === 'confirm') {
-      if (value === this.pendingPasscode) {
-        try {
-          await authDB.setPasscode(value)
-          this.pendingPasscode = ''
-          this.passcodeMode = 'verify'
-          this.showToast({ message: '✅ Access code saved.', type: 'success' })
-          void pushLocal('HASAN TECH STUDIO', 'Access code saved.')
-          await this.flashOkAndUnlock()
-        } catch (error) {
-          this.showToast({ message: this.errorMessage(error), type: 'error' })
-        }
-      } else {
-        this.passcodeError('Codes do not match. Start again.')
-        this.passcodeMode = 'set'
-        this.pendingPasscode = ''
-        this.setPasscodeCopy('Set access code', 'Choose a 6-digit code')
-        this.resetPasscodeInput(input)
-      }
-      return
-    }
-    await this.verifyPasscode()
-  }
-
-  private async verifyPasscode(): Promise<void> {
-    const input = this.container.querySelector<HTMLInputElement>('#passcode-input')
-    if (!input) return
-    try {
-      if (await authDB.verifyPasscode(input.value)) {
-        await this.flashOkAndUnlock()
-        return
-      }
-    } catch (error) {
-      this.showToast({ message: this.errorMessage(error), type: 'error' })
-      return
-    }
-    if (input.value.length === 6) {
-      this.setBotMood('worried')
-      this.flashBot('bot-error')
-      this.passcodeError('Wrong code, try again')
-      this.showToast({ message: '❌ Wrong code, try again', type: 'error' })
-      this.resetPasscodeInput(input)
-    }
   }
 
   /** Gate khul gaya — main screen par jao. */
@@ -459,265 +253,6 @@ export class AuthUI {
     this.showToast({ message: '✅ Unlocked!', type: 'success' })
     void pushLocal('HASAN TECH STUDIO', 'Unlocked.')
     this.showScreen('v-work-progress')
-  }
-
-  /** Correct code complete — stroke flashes GREEN, then unlock. */
-  private async flashOkAndUnlock(): Promise<void> {
-    const card = this.container.querySelector<HTMLElement>('.passcode-card')
-    const input = this.container.querySelector<HTMLInputElement>('#passcode-input')
-    this.passcodeResolving = true
-    card?.classList.remove('code-error')
-    card?.classList.add('code-ok')
-    await new Promise<void>((resolve) => window.setTimeout(resolve, 550))
-    if (input) {
-      input.value = ''
-      this.updatePasscodeDots('')
-    }
-    card?.classList.remove('code-ok')
-    this.passcodeResolving = false
-    this.hidePasscodePopup()
-    this.unlock()
-  }
-
-  private resetPasscodeInput(input: HTMLInputElement): void {
-    if (this.passcodeResetTimer !== undefined) clearTimeout(this.passcodeResetTimer)
-    this.passcodeResetTimer = window.setTimeout(() => {
-      this.passcodeResetTimer = undefined
-      input.value = ''
-      this.updatePasscodeDots('')
-      this.container.querySelector<HTMLElement>('.passcode-card')?.classList.remove('code-error')
-      focusFast(input)
-    }, 650)
-  }
-
-  private passcodeError(message: string): void {
-    const card = this.container.querySelector<HTMLElement>('.passcode-card')
-    const error = this.container.querySelector<HTMLElement>('#passcode-error')
-    if (error) { error.textContent = message; error.hidden = false }
-    card?.classList.remove('passcode-shake')
-    void card?.offsetWidth
-    card?.classList.add('passcode-shake')
-    // Wrong input — stroke turns RED.
-    card?.classList.add('code-error')
-  }
-
-  private updatePasscodeDots(value: string): void {
-    this.container.querySelectorAll<HTMLElement>('#passcode-dots i').forEach((dot, index) => {
-      dot.classList.toggle('is-on', index < value.length)
-    })
-  }
-
-  // ---- Fingerprint (WebAuthn platform authenticator, single device) ----
-
-  private async fingerprintSupported(): Promise<boolean> {
-    try {
-      if (!window.isSecureContext) return false
-      if (typeof PublicKeyCredential === 'undefined') return false
-      if (typeof PublicKeyCredential.isUserVerifyingPlatformAuthenticatorAvailable !== 'function') return false
-      return await PublicKeyCredential.isUserVerifyingPlatformAuthenticatorAvailable()
-    } catch {
-      return false
-    }
-  }
-
-  private async refreshFingerprintButton(): Promise<void> {
-    const button = this.container.querySelector<HTMLElement>('#fp-button')
-    if (!button) return
-    // Icon-only round button — no text label to load or shift layout.
-    const ok = (await this.fingerprintSupported()) && !!navigator.credentials
-    button.hidden = !ok
-  }
-
-  private registerFpStrike(): void {
-    this.fpAttempts += 1
-    if (this.fpAttempts < FP_MAX_ATTEMPTS) return
-    const button = this.container.querySelector<HTMLElement>('#fp-button')
-    if (button) button.hidden = true
-    this.showToast({ message: 'Use your code instead.', type: 'info' })
-  }
-
-  private async registerFingerprint(): Promise<void> {
-    if (!navigator.credentials) throw new Error('WebAuthn is unavailable.')
-    const credential = (await navigator.credentials.create({
-      publicKey: {
-        challenge: crypto.getRandomValues(new Uint8Array(32)),
-        // rp.id explicit = current host. Browsers default to the same value,
-        // but an explicit id avoids "invalid domain"-style failures where the
-        // default cannot be computed (wrappers, portals, odd hosts).
-        rp: { name: 'HASAN TECH STUDIO', id: window.location.hostname },
-        user: {
-          id: new TextEncoder().encode('hts-local-user'),
-          name: 'hts-local-user',
-          displayName: 'HTS user',
-        },
-        pubKeyCredParams: [
-          { type: 'public-key', alg: -7 },
-          { type: 'public-key', alg: -257 },
-        ],
-        authenticatorSelection: { authenticatorAttachment: 'platform', userVerification: 'required' },
-        timeout: 60000,
-        attestation: 'none',
-      },
-    })) as PublicKeyCredential | null
-    if (!credential) throw new Error('Registration failed.')
-    try {
-      writeFpCredentialId(bufferToBase64url(credential.rawId))
-    } catch {
-      this.showToast({ message: STORAGE_UNAVAILABLE_MESSAGE, type: 'warning' })
-      throw new Error('Storage unavailable.')
-    }
-  }
-
-  private async authenticateFingerprint(credentialId: string): Promise<void> {
-    if (!navigator.credentials) throw new Error('WebAuthn is unavailable.')
-    const result = await navigator.credentials.get({
-      publicKey: {
-        challenge: crypto.getRandomValues(new Uint8Array(32)),
-        allowCredentials: [{ type: 'public-key', id: base64urlToBytes(credentialId).buffer as ArrayBuffer }],
-        userVerification: 'required',
-        timeout: 60000,
-      },
-    })
-    if (!result) throw new Error('Authentication failed.')
-  }
-
-  /** Gate par fingerprint button — success = unlock. */
-  private async handleGateFingerprint(): Promise<void> {
-    if (this.isFpBusy) return
-    if (!(await this.fingerprintSupported())) {
-      this.showToast({ message: 'Fingerprint is not available on this device.', type: 'error' })
-      return
-    }
-    this.isFpBusy = true
-    const button = this.container.querySelector<HTMLElement>('#fp-button')
-    button?.classList.add('fp-busy')
-    try {
-      // Setup mode (first time / change code): sirf fingerprint REGISTER karo,
-      // unlock nahi — code flow uske baad jari rehta hai.
-      if (this.passcodeMode !== 'verify') {
-        this.showToast({ message: 'Touch the sensor to add your fingerprint (optional).', type: 'info' })
-        try {
-          await this.registerFingerprint()
-          this.showToast({ message: '✅ Fingerprint added — ab code set karo.', type: 'success' })
-          void pushLocal('HASAN TECH STUDIO', 'Fingerprint registered.')
-          void this.refreshFingerprintButton()
-        } catch (error) {
-          if (!(error instanceof DOMException && (error.name === 'NotAllowedError' || error.name === 'AbortError'))) {
-            this.showToast({ message: this.fpErrorMessage(error), type: 'error' })
-          }
-        }
-        return
-      }
-      const existing = readFpCredentialId()
-      if (existing) {
-        try {
-          await this.authenticateFingerprint(existing)
-        } catch (error) {
-          if (error instanceof DOMException && (error.name === 'NotFoundError' || error.name === 'InvalidStateError')) {
-            writeFpCredentialId(null)
-            this.showToast({ message: 'Fingerprint changed — tap again to register.', type: 'warning' })
-            if (this.currentScreen === 'v-work-progress') this.renderMain()
-            return
-          }
-          this.registerFpStrike()
-          throw error
-        }
-      } else {
-        this.showToast({ message: 'Touch the sensor to register your fingerprint.', type: 'info' })
-        try {
-          await this.registerFingerprint()
-          void pushLocal('HASAN TECH STUDIO', 'Fingerprint registered.')
-        } catch (error) {
-          this.registerFpStrike()
-          throw error
-        }
-      }
-      this.hidePasscodePopup()
-      void pushLocal('HASAN TECH STUDIO', 'Unlocked with fingerprint.')
-      this.unlock()
-    } catch (error) {
-      if (error instanceof DOMException && (error.name === 'NotAllowedError' || error.name === 'AbortError')) {
-        // Silent cancel/deny — code card is already there, zero irritation.
-      } else {
-        this.showToast({ message: this.fpErrorMessage(error), type: 'error' })
-      }
-    } finally {
-      this.isFpBusy = false
-      button?.classList.remove('fp-busy')
-    }
-  }
-
-  /** Gate khulne par fingerprint AUTO try — fail ho to chup-chaap code se kholo. */
-  private async autoFingerprint(): Promise<void> {
-    if (this.isFpBusy) return
-    const overlay = this.container.querySelector<HTMLElement>('#passcode-overlay')
-    if (!overlay || overlay.hidden) return
-    const existing = readFpCredentialId()
-    if (!existing) return
-    if (!(await this.fingerprintSupported())) return
-    const button = this.container.querySelector<HTMLElement>('#fp-button')
-    this.isFpBusy = true
-    button?.classList.add('fp-busy')
-    try {
-      await this.authenticateFingerprint(existing)
-      this.hidePasscodePopup()
-      void pushLocal('HASAN TECH STUDIO', 'Unlocked with fingerprint.')
-      this.unlock()
-    } catch (error) {
-      if (error instanceof DOMException && (error.name === 'NotFoundError' || error.name === 'InvalidStateError')) {
-        writeFpCredentialId(null)
-      } else {
-        this.registerFpStrike()
-      }
-      // Silent on auto path: code card is already visible for code or manual tap.
-    } finally {
-      this.isFpBusy = false
-      button?.classList.remove('fp-busy')
-    }
-  }
-
-  /** Main screen par fingerprint button — register ya test. */
-  private async handleMainFingerprint(): Promise<void> {
-    if (this.isFpBusy) return
-    if (!(await this.fingerprintSupported())) {
-      this.showToast({ message: 'Fingerprint is not available on this device.', type: 'error' })
-      return
-    }
-    const existing = readFpCredentialId()
-    if (!existing) {
-      this.showToast({ message: 'Touch the sensor to register your fingerprint.', type: 'info' })
-      this.isFpBusy = true
-      try {
-        await this.registerFingerprint()
-        this.showToast({ message: '✅ Fingerprint registered.', type: 'success' })
-        void pushLocal('HASAN TECH STUDIO', 'Fingerprint registered.')
-        this.renderMain()
-      } catch (error) {
-        if (!(error instanceof DOMException && (error.name === 'NotAllowedError' || error.name === 'AbortError'))) {
-          this.showToast({ message: this.fpErrorMessage(error), type: 'error' })
-        }
-      } finally {
-        this.isFpBusy = false
-      }
-      return
-    }
-    this.isFpBusy = true
-    try {
-      await this.authenticateFingerprint(existing)
-      this.setBotMood('happy')
-      this.flashBot('bot-success')
-      this.showToast({ message: '✅ Fingerprint works!', type: 'success' })
-    } catch (error) {
-      if (error instanceof DOMException && (error.name === 'NotFoundError' || error.name === 'InvalidStateError')) {
-        writeFpCredentialId(null)
-        this.showToast({ message: 'Fingerprint changed — register again.', type: 'warning' })
-        this.renderMain()
-      } else if (!(error instanceof DOMException && (error.name === 'NotAllowedError' || error.name === 'AbortError'))) {
-        this.showToast({ message: this.fpErrorMessage(error), type: 'error' })
-      }
-    } finally {
-      this.isFpBusy = false
-    }
   }
 
   // ---- Notifications (same one-click local bell) ----
@@ -735,7 +270,6 @@ export class AuthUI {
       setPref(false)
       this.refreshBell()
       this.showToast({ message: 'Notifications off.', type: 'info' })
-      if (this.currentScreen === 'v-work-progress') this.renderMain()
       return
     }
     const result = await enableNotifications()
@@ -746,7 +280,6 @@ export class AuthUI {
     } else if (result === 'denied') {
       this.showToast({ message: 'Blocked — allow notifications in site settings.', type: 'error' })
     }
-    if (this.currentScreen === 'v-work-progress') this.renderMain()
   }
 
   private refreshBell(): void {
@@ -868,49 +401,6 @@ export class AuthUI {
         this.isBotAnimating = false
       }, 1000)
     }, 900)
-  }
-
-  private errorMessage(error: unknown): string {
-    return error instanceof Error ? error.message : 'Something went wrong. Please try again.'
-  }
-
-  /** Fingerprint failures show the exact browser error (name + message) so the cause is diagnosable. */
-  private fpErrorMessage(error: unknown): string {
-    if (error instanceof DOMException) {
-      const detail = error.message ? `${error.name}: ${error.message}` : error.name
-      if (error.name === 'SecurityError') {
-        return `${detail} (page HTTPS/localhost par kholo, aur domain sahi honi chahiye)`
-      }
-      return detail
-    }
-    return this.errorMessage(error)
-  }
-
-  /** Main screen — no accounts, just device security controls. */
-  private renderMain(): void {
-    const mount = this.container.querySelector<HTMLElement>('.work-progress-screen')
-    if (!mount) return
-    const fpOn = readFpCredentialId() !== null
-    const notifyOn = prefEnabled() && currentPermission() === 'granted'
-    mount.innerHTML = `
-      <div class="dash">
-        <h1 class="dash-hello">HASAN TECH STUDIO</h1>
-        <p class="dash-muted" style="text-align:center">Unlocked 🔓 — this device only, no accounts.</p>
-        <div class="dash-grid">
-          <section class="dash-card">
-            <h2>Security</h2>
-            <p class="dash-muted">Access code: <b>set</b> · Fingerprint: <b>${fpOn ? 'on' : 'off'}</b></p>
-            <button class="dash-btn" type="button" data-action="set-passcode">Change access code</button>
-            <button class="dash-btn dash-btn-ghost" type="button" data-action="fingerprint">${fpOn ? 'Test fingerprint' : 'Enable fingerprint'}</button>
-            <button class="dash-btn dash-btn-danger" type="button" data-action="lock-now">Lock now</button>
-          </section>
-          <section class="dash-card">
-            <h2>Notifications</h2>
-            <p class="dash-muted">App alerts are <b>${notifyOn ? 'on' : 'off'}</b>.</p>
-            <button class="dash-btn dash-btn-ghost" type="button" data-action="notify-toggle">${notifyOn ? 'Turn off' : 'Turn on'}</button>
-          </section>
-        </div>
-      </div>`
   }
 
   private showToast(options: ToastOptions): void {

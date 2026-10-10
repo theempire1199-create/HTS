@@ -7,3 +7,8 @@ export const FP_MAX_ATTEMPTS = 3
 
 export const STORAGE_UNAVAILABLE_MESSAGE =
   'Local storage unavailable. Some features may be limited.'
+
+export const TABLE_COUNT = 20
+
+export const TABLES_STATE_KEY = 'hts_tables_v1'
+export const ACTIVITY_LOG_KEY = 'hts_activity_v1'
