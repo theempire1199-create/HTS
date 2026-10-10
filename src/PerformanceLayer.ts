@@ -31,3 +31,36 @@ export function startTimedLoop(callback: () => void, delay: number): () => void 
   const timer = window.setInterval(callback, delay)
   return () => window.clearInterval(timer)
 }
+
+/**
+ * Fast, glitch-free input focus.
+ * Double-rAF lets the overlay finish its show animation before the keyboard
+ * is requested, so mobile keyboards appear within the tap, without the
+ * 200-350ms setTimeout lag and without scroll jump.
+ */
+export function focusFast(input: HTMLInputElement): void {
+  if (document.activeElement === input) return
+  window.requestAnimationFrame(() => {
+    window.requestAnimationFrame(() => {
+      try {
+        input.focus({ preventScroll: true })
+      } catch {
+        input.focus()
+      }
+    })
+  })
+}
+
+let reducedMotionCache: boolean | undefined
+
+/** Central reduced-motion check so all animations respect the OS setting. */
+export function prefersReducedMotion(): boolean {
+  if (reducedMotionCache === undefined) {
+    try {
+      reducedMotionCache = window.matchMedia('(prefers-reduced-motion: reduce)').matches
+    } catch {
+      reducedMotionCache = false
+    }
+  }
+  return reducedMotionCache
+}

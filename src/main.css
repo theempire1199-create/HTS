@@ -279,6 +279,81 @@ body[data-screen="v-work-progress"] .notify-bell { display: none; }
 .passcode-fp-icon { display: inline-flex; }
 .passcode-fp-icon .fp-icon { width: 26px; height: 26px; }
 
+/* ---- Auth (v-code): sirf card, peeche shiny black glow. Card theme same. ---- */
+html:has(body[data-screen="v-code"]) { background: #060609; }
+body[data-screen="v-code"] {
+  color: #f4f1ff;
+  background:
+    radial-gradient(420px 300px at 50% -60px, rgba(139,92,246,.5), transparent 70%),
+    radial-gradient(520px 380px at 50% 108%, rgba(124,58,237,.42), transparent 70%),
+    radial-gradient(240px 240px at 12% 30%, rgba(6,182,212,.22), transparent 70%),
+    radial-gradient(240px 240px at 88% 28%, rgba(168,85,247,.28), transparent 70%),
+    linear-gradient(180deg, #0a0a12 0%, #060609 55%, #0b0716 100%);
+}
+body[data-screen="v-code"]::before {
+  content: ''; position: fixed; inset: 0; z-index: 0; pointer-events: none;
+  background:
+    radial-gradient(1.5px 1.5px at 12% 22%, rgba(255,255,255,.9), transparent 60%),
+    radial-gradient(1.5px 1.5px at 32% 12%, rgba(255,255,255,.7), transparent 60%),
+    radial-gradient(1.5px 1.5px at 68% 16%, rgba(255,255,255,.8), transparent 60%),
+    radial-gradient(1.5px 1.5px at 86% 30%, rgba(255,255,255,.7), transparent 60%),
+    radial-gradient(1.5px 1.5px at 22% 72%, rgba(255,255,255,.55), transparent 60%),
+    radial-gradient(1.5px 1.5px at 78% 76%, rgba(255,255,255,.55), transparent 60%);
+  opacity: .8;
+}
+/* Sirf card — header, title, footer, bell auth par hidden. */
+body[data-screen="v-code"] .site-header,
+body[data-screen="v-code"] .site-footer,
+body[data-screen="v-code"] #v-code .title,
+body[data-screen="v-code"] .notify-bell { display: none !important; }
+body[data-screen="v-code"] .auth-shell { justify-content: center; padding: 0; }
+body[data-screen="v-code"] #v-code { flex: 0; min-height: 0; }
+body[data-screen="v-code"] .ambient { opacity: .9; filter: blur(70px); }
+body[data-screen="v-code"] .ambient-a { background: radial-gradient(circle, rgba(124,58,237,.75), transparent 70%); }
+body[data-screen="v-code"] .ambient-b { background: radial-gradient(circle, rgba(139,92,246,.55), transparent 70%); }
+body[data-screen="v-code"] .ambient-c { background: radial-gradient(circle, rgba(6,182,212,.35), transparent 70%); opacity: .6; }
+/* Overlay transparent taaki black glow dikhe — card bilkul same. */
+body[data-screen="v-code"] .passcode-overlay {
+  background: transparent; backdrop-filter: none; -webkit-backdrop-filter: none;
+}
+/* Card ko black glow par halka lift — theme same, sirf depth. */
+body[data-screen="v-code"] .passcode-card {
+  box-shadow: 0 0 0 5px rgba(124,58,237,.32), 0 0 44px rgba(139,92,246,.5), 0 25px 54px rgba(0,0,0,.6), inset 0 8px 16px rgba(255,255,255,.9), inset 0 -12px 24px rgba(76,29,149,.18);
+}
+
+/* ---- Fingerprint: sirf round icon button ---- */
+.passcode-card .passcode-fp {
+  margin-top: 12px; width: 58px; height: 58px; padding: 0; border-radius: 50%;
+  display: grid; place-items: center; align-self: center;
+  border: 1.5px solid rgba(124,58,237,.45);
+  background: radial-gradient(circle at 30% 25%, #fff, #ede9fe 70%);
+  box-shadow: 0 8px 20px rgba(76,29,149,.25), inset 0 2px 5px #fff;
+  transition: transform .18s ease, box-shadow .2s ease;
+}
+.passcode-card .passcode-fp:hover { background: #fff; transform: scale(1.06); }
+.passcode-card .passcode-fp:active { transform: scale(.93); }
+.passcode-card .passcode-fp:focus-visible { outline: 3px solid rgba(124,58,237,.5); outline-offset: 3px; }
+.passcode-card .passcode-fp .fp-icon { width: 28px; height: 28px; }
+.passcode-card .passcode-fp.fp-busy { animation: fp-pulse 1s ease-in-out infinite; }
+@keyframes fp-pulse { 0%,100% { transform: scale(1); } 50% { transform: scale(1.08); } }
+
+/* ---- Input: glitch-free, smooth + fast keyboard ---- */
+.passcode-wrap { width: min(100%, 248px); }
+.passcode-wrap input {
+  -webkit-appearance: none; appearance: none;
+  transform: translateZ(0); backface-visibility: hidden;
+  font-variant-numeric: tabular-nums; caret-color: var(--purple);
+  transition: border-color .15s ease, box-shadow .15s ease, background .15s ease;
+}
+.passcode-wrap input::placeholder { color: rgba(117,90,163,.45); letter-spacing: 10px; }
+.passcode-dots { contain: layout style; }
+.passcode-dots i { will-change: transform; }
+.passcode-card { contain: layout style; will-change: transform; }
+
+/* ---- Performance layer visible effects: GPU + containment ---- */
+#app, .auth-shell, .passcode-overlay { content-visibility: auto; contain-intrinsic-size: auto 600px; }
+.dash-card { content-visibility: auto; contain-intrinsic-size: auto 220px; }
+
 /* Main screen: no ball, brand name, tagline, or bottom text. */
 body[data-screen="v-work-progress"] .site-header,
 body[data-screen="v-work-progress"] .site-footer { display: none; }

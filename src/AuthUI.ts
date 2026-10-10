@@ -1,6 +1,6 @@
 import { authDB } from './AuthDB'
 import type { ScreenId, ToastOptions } from './index'
-import { startTimedLoop } from './PerformanceLayer'
+import { focusFast, prefersReducedMotion, rafThrottle, startTimedLoop } from './PerformanceLayer'
 import { currentPermission, enableNotifications, notifySupported, onStorageUnavailable, prefEnabled, pushLocal, setPref } from './Notify'
 import {
   FP_CRED_KEY,
@@ -57,7 +57,6 @@ export class AuthUI {
   private avatarRevealTimer: number | undefined
   private avatarHideTimer: number | undefined
   private avatarCloseTimer: number | undefined
-  private passcodeFocusTimer: number | undefined
   private passcodeResetTimer: number | undefined
   private botFlashTimer: number | undefined
   private botFallTimer: number | undefined
@@ -72,6 +71,7 @@ export class AuthUI {
   private fpAttempts = 0
   private initialized = false
   private stopBotIdleAnimation: (() => void) | undefined
+  private cancelGazeThrottle: (() => void) | undefined
   private readonly companionImage = '/IMG-20261008-WA6370.jpg'
 
   constructor(container: HTMLElement) {
@@ -135,9 +135,9 @@ export class AuthUI {
           <div class="passcode-title" id="passcode-title">Enter Code</div>
           <div class="passcode-sub">Fill your 6-digit access code</div>
           <div class="passcode-dots" id="passcode-dots" aria-hidden="true"><i></i><i></i><i></i><i></i><i></i><i></i></div>
-          <div class="input-wrap passcode-wrap"><input id="passcode-input" inputmode="numeric" autocomplete="one-time-code" maxlength="6" placeholder="••••••" aria-label="6-digit access code"></div>
+          <div class="input-wrap passcode-wrap"><input id="passcode-input" type="tel" inputmode="numeric" pattern="[0-9]*" autocomplete="one-time-code" enterkeyhint="done" autocapitalize="off" autocorrect="off" spellcheck="false" maxlength="6" placeholder="••••••" aria-label="6-digit access code"></div>
           <div class="passcode-error" id="passcode-error" hidden>Wrong code, try again</div>
-          <button class="passcode-fp" id="fp-button" type="button" data-action="fingerprint" hidden aria-label="Unlock with fingerprint"><span class="passcode-fp-icon" aria-hidden="true">${FP_ICON}</span><span id="fp-label">Fingerprint</span></button>
+          <button class="passcode-fp" id="fp-button" type="button" data-action="fingerprint" hidden aria-label="Unlock with fingerprint"><span class="passcode-fp-icon" aria-hidden="true">${FP_ICON}</span></button>
           <button class="passcode-alt" type="button" hidden aria-hidden="true" tabindex="-1">try another way</button>
         </div>
       </div>
@@ -157,7 +157,10 @@ export class AuthUI {
     const bot = this.container.querySelector<HTMLElement>('.brand-emblem')
     bot?.addEventListener('pointerdown', () => this.triggerBotFall())
     bot?.addEventListener('keydown', (event) => { if (event.key === 'Enter' || event.key === ' ') this.triggerBotFall() })
-    bot?.addEventListener('pointermove', (event) => {
+    // Gaze follows the pointer but throttled to 1 style-write per frame (no jank).
+    this.cancelGazeThrottle?.()
+    const gaze = rafThrottle<PointerEvent>((event) => {
+      if (!bot || prefersReducedMotion()) return
       const bounds = bot.getBoundingClientRect()
       const x = Math.max(-1, Math.min(1, ((event.clientX - bounds.left) / bounds.width - .5) * 2))
       const y = Math.max(-1, Math.min(1, ((event.clientY - bounds.top) / bounds.height - .5) * 2))
@@ -165,6 +168,8 @@ export class AuthUI {
       bot.style.setProperty('--gaze-y', `${y * 2}px`)
       if (!bot.dataset.mood || bot.dataset.mood === 'idle') bot.dataset.mood = 'curious'
     })
+    this.cancelGazeThrottle = gaze.cancel
+    bot?.addEventListener('pointermove', gaze.handler, { passive: true })
     bot?.addEventListener('pointerleave', () => {
       bot.style.setProperty('--gaze-x', '0px')
       bot.style.setProperty('--gaze-y', '0px')
@@ -201,8 +206,10 @@ export class AuthUI {
     passcodeInput?.addEventListener('keydown', (event) => {
       if (event.key === 'Enter') void this.submitPasscode()
     })
-    this.container.querySelector<HTMLElement>('.passcode-card')?.addEventListener('click', () => {
-      passcodeInput?.focus({ preventScroll: true })
+    // Tap anywhere on the card = instant keyboard. Guard avoids re-focus flicker.
+    this.container.querySelector<HTMLElement>('.passcode-card')?.addEventListener('click', (event) => {
+      if ((event.target as HTMLElement | null)?.closest?.('#fp-button')) return
+      if (passcodeInput && document.activeElement !== passcodeInput) focusFast(passcodeInput)
     })
 
     document.addEventListener('keydown', this.handleEscape)
@@ -254,8 +261,6 @@ export class AuthUI {
     this.avatarHideTimer = undefined
     if (this.avatarCloseTimer !== undefined) clearTimeout(this.avatarCloseTimer)
     this.avatarCloseTimer = undefined
-    if (this.passcodeFocusTimer !== undefined) clearTimeout(this.passcodeFocusTimer)
-    this.passcodeFocusTimer = undefined
     if (this.passcodeResetTimer !== undefined) clearTimeout(this.passcodeResetTimer)
     this.passcodeResetTimer = undefined
     if (this.botFlashTimer !== undefined) clearTimeout(this.botFlashTimer)
@@ -277,6 +282,8 @@ export class AuthUI {
     }
     this.stopBotIdleAnimation?.()
     this.stopBotIdleAnimation = undefined
+    this.cancelGazeThrottle?.()
+    this.cancelGazeThrottle = undefined
     document.removeEventListener('keydown', this.handleEscape)
     if (this.containerClickHandler) {
       this.container.removeEventListener('click', this.containerClickHandler)
@@ -327,11 +334,8 @@ export class AuthUI {
     overlay.classList.add('show')
     // Setup me fingerprint button dikhao taaki pehli baar me hi dono set ho jayein.
     void this.refreshFingerprintButton()
-    if (this.passcodeFocusTimer !== undefined) clearTimeout(this.passcodeFocusTimer)
-    this.passcodeFocusTimer = window.setTimeout(() => {
-      this.passcodeFocusTimer = undefined
-      input.focus({ preventScroll: true })
-    }, 200)
+    // No 200ms lag — rAF focus opens the keyboard within the tap.
+    focusFast(input)
   }
 
   private showPasscodePopup(): void {
@@ -362,11 +366,8 @@ export class AuthUI {
       }
     })
     if (!readFpCredentialId()) {
-      if (this.passcodeFocusTimer !== undefined) clearTimeout(this.passcodeFocusTimer)
-      this.passcodeFocusTimer = window.setTimeout(() => {
-        this.passcodeFocusTimer = undefined
-        input.focus({ preventScroll: true })
-      }, 350)
+      // Fingerprint not registered — focus instantly via rAF, no 350ms wait.
+      focusFast(input)
     }
   }
 
@@ -380,11 +381,14 @@ export class AuthUI {
   private handlePasscodeInput(): void {
     const input = this.container.querySelector<HTMLInputElement>('#passcode-input')
     if (!input) return
-    input.value = input.value.replace(/\D/g, '').slice(0, 6)
-    this.updatePasscodeDots(input.value)
+    // Only rewrite when filtering actually changed something — avoids cursor
+    // jump / keyboard flicker that feels like a "glitch" while typing fast.
+    const clean = input.value.replace(/\D/g, '').slice(0, 6)
+    if (clean !== input.value) input.value = clean
+    this.updatePasscodeDots(clean)
     const error = this.container.querySelector<HTMLElement>('#passcode-error')
     if (error) error.hidden = true
-    if (input.value.length === 6) void this.submitPasscode()
+    if (clean.length === 6) void this.submitPasscode()
   }
 
   private async submitPasscode(): Promise<void> {
@@ -398,7 +402,7 @@ export class AuthUI {
       this.setPasscodeCopy('Confirm access code', 'Re-enter your 6-digit code')
       input.value = ''
       this.updatePasscodeDots('')
-      input.focus({ preventScroll: true })
+      focusFast(input)
       return
     }
     if (this.passcodeMode === 'confirm') {
@@ -482,7 +486,7 @@ export class AuthUI {
       input.value = ''
       this.updatePasscodeDots('')
       this.container.querySelector<HTMLElement>('.passcode-card')?.classList.remove('code-error')
-      input.focus({ preventScroll: true })
+      focusFast(input)
     }, 650)
   }
 
@@ -518,20 +522,17 @@ export class AuthUI {
 
   private async refreshFingerprintButton(): Promise<void> {
     const button = this.container.querySelector<HTMLElement>('#fp-button')
-    const label = this.container.querySelector<HTMLElement>('#fp-label')
     if (!button) return
+    // Icon-only round button — no text label to load or shift layout.
     const ok = (await this.fingerprintSupported()) && !!navigator.credentials
     button.hidden = !ok
-    if (label) label.hidden = !ok
   }
 
   private registerFpStrike(): void {
     this.fpAttempts += 1
     if (this.fpAttempts < FP_MAX_ATTEMPTS) return
     const button = this.container.querySelector<HTMLElement>('#fp-button')
-    const label = this.container.querySelector<HTMLElement>('#fp-label')
     if (button) button.hidden = true
-    if (label) label.hidden = true
     this.showToast({ message: 'Use your code instead.', type: 'info' })
   }
 
@@ -817,6 +818,8 @@ export class AuthUI {
 
   private startBotIdleAnimation(): void {
     this.stopBotIdleAnimation?.()
+    // Reduced-motion users get zero idle loops — instant perf + comfort win.
+    if (prefersReducedMotion()) return
     this.stopBotIdleAnimation = startTimedLoop(() => {
       const bot = this.container.querySelector<HTMLElement>('.brand-emblem')
       if (!bot || this.currentScreen !== 'v-code' || this.isBotAnimating) return
