@@ -50,14 +50,13 @@ function writeFpCredentialId(id: string | null): void {
 
 export class AuthUI {
   private readonly container: HTMLElement
-  private currentScreen: ScreenId = 'v-start'
+  private currentScreen: ScreenId = 'v-code'
   private toastTimeout: number | undefined
   private isBotAnimating = false
   private botBubbleTimer: number | undefined
   private avatarRevealTimer: number | undefined
   private avatarHideTimer: number | undefined
   private avatarCloseTimer: number | undefined
-  private splashTimer: number | undefined
   private passcodeFocusTimer: number | undefined
   private passcodeResetTimer: number | undefined
   private botFlashTimer: number | undefined
@@ -85,7 +84,8 @@ export class AuthUI {
     this.bindEvents()
     this.startBotIdleAnimation()
     this.refreshBell()
-    this.startSplashTimer()
+    // No splash — fingerprint/code gate opens the moment the app starts.
+    this.showScreen('v-code')
   }
 
   private render(): void {
@@ -118,17 +118,7 @@ export class AuthUI {
         </div>
       </header>
       <main class="auth-shell">
-        <section class="view show" id="v-start" role="button" tabindex="0" aria-label="Tap anywhere to continue" data-action="show-screen" data-screen="v-code">
-          <div class="start-screen hts-intro">
-            <div class="hts-stage-glow" aria-hidden="true"></div>
-            <div class="hts-top-lockup" aria-label="HTS.OS">${this.renderTopBrand()}</div>
-            <div class="hts-glow-line" aria-hidden="true"></div>
-            <div class="hts-tagline" aria-hidden="true">the independent tech......</div>
-            <div class="hts-dev-credit" aria-hidden="true"><span class="hts-dev-by">developed by-</span><span class="hts-dev-studio">HASAN TECH STUDIO</span></div>
-          </div>
-        </section>
-
-        <section class="view" id="v-code" aria-label="Unlock" hidden>
+        <section class="view show" id="v-code" aria-label="Unlock">
           <h1 class="title">UNLOCK<small>Fingerprint ya 6-digit code se kholo</small></h1>
         </section>
 
@@ -153,15 +143,6 @@ export class AuthUI {
       <div id="toast" role="status" aria-live="polite"></div>
     `
     document.body.dataset.screen = this.currentScreen
-  }
-
-  private renderTopBrand(): string {
-    const letters = Array.from('HTS.OS').map((character, index) =>
-      character === '.'
-        ? `<span class="hts-x-letter hts-x-dot" aria-hidden="true" style="--i:${index}">.</span>`
-        : `<span class="hts-x-letter" aria-hidden="true" style="--i:${index}">${character}</span>`,
-    ).join('')
-    return `<span class="hts-extreme">${letters}</span>`
   }
 
   private renderTagline(): string {
@@ -200,7 +181,7 @@ export class AuthUI {
       const action = target.dataset.action
       if (action === 'show-screen') {
         const screen = target.dataset.screen
-        if (screen === 'v-start' || screen === 'v-code' || screen === 'v-work-progress') this.showScreen(screen)
+        if (screen === 'v-code' || screen === 'v-work-progress') this.showScreen(screen)
       }
       if (action === 'notify-toggle') void this.toggleNotifications()
       if (action === 'fingerprint') {
@@ -224,14 +205,6 @@ export class AuthUI {
     })
 
     document.addEventListener('keydown', this.handleEscape)
-
-    const start = this.container.querySelector<HTMLElement>('#v-start')
-    start?.addEventListener('keydown', (event) => {
-      if ((event.key === 'Enter' || event.key === ' ') && this.currentScreen === 'v-start') {
-        event.preventDefault()
-        this.showScreen('v-code')
-      }
-    })
   }
 
   private readonly handleEscape = (event: KeyboardEvent): void => {
@@ -252,12 +225,6 @@ export class AuthUI {
         overlay.hidden = true
       }
     }
-    if (screen === 'v-start') {
-      this.hidePasscodePopup()
-      this.startSplashTimer()
-    } else {
-      this.clearSplashTimer()
-    }
     this.currentScreen = screen
     if (screen === 'v-code') this.openGate()
     if (screen === 'v-work-progress') this.renderMain()
@@ -276,22 +243,6 @@ export class AuthUI {
     window.scrollTo({ top: 0, behavior: 'smooth' })
   }
 
-  // ---- Splash ----
-
-  private startSplashTimer(): void {
-    this.clearSplashTimer()
-    this.splashTimer = window.setTimeout(() => {
-      this.splashTimer = undefined
-      if (this.currentScreen !== 'v-start') return
-      this.showScreen('v-code')
-    }, 3500)
-  }
-
-  private clearSplashTimer(): void {
-    if (this.splashTimer !== undefined) clearTimeout(this.splashTimer)
-    this.splashTimer = undefined
-  }
-
   /** Clear every pending UI timer before a screen transition or unmount. */
   private clearTimers(): void {
     if (this.botBubbleTimer !== undefined) clearTimeout(this.botBubbleTimer)
@@ -302,8 +253,6 @@ export class AuthUI {
     this.avatarHideTimer = undefined
     if (this.avatarCloseTimer !== undefined) clearTimeout(this.avatarCloseTimer)
     this.avatarCloseTimer = undefined
-    if (this.splashTimer !== undefined) clearTimeout(this.splashTimer)
-    this.splashTimer = undefined
     if (this.passcodeFocusTimer !== undefined) clearTimeout(this.passcodeFocusTimer)
     this.passcodeFocusTimer = undefined
     if (this.passcodeResetTimer !== undefined) clearTimeout(this.passcodeResetTimer)
@@ -560,7 +509,10 @@ export class AuthUI {
     const credential = (await navigator.credentials.create({
       publicKey: {
         challenge: crypto.getRandomValues(new Uint8Array(32)),
-        rp: { name: 'HASAN TECH STUDIO' },
+        // rp.id explicit = current host. Browsers default to the same value,
+        // but an explicit id avoids "invalid domain"-style failures where the
+        // default cannot be computed (wrappers, portals, odd hosts).
+        rp: { name: 'HASAN TECH STUDIO', id: window.location.hostname },
         user: {
           id: new TextEncoder().encode('hts-local-user'),
           name: 'hts-local-user',
@@ -619,7 +571,7 @@ export class AuthUI {
           void this.refreshFingerprintButton()
         } catch (error) {
           if (!(error instanceof DOMException && (error.name === 'NotAllowedError' || error.name === 'AbortError'))) {
-            this.showToast({ message: this.errorMessage(error), type: 'error' })
+            this.showToast({ message: this.fpErrorMessage(error), type: 'error' })
           }
         }
         return
@@ -655,7 +607,7 @@ export class AuthUI {
       if (error instanceof DOMException && (error.name === 'NotAllowedError' || error.name === 'AbortError')) {
         // Silent cancel/deny — code card is already there, zero irritation.
       } else {
-        this.showToast({ message: this.errorMessage(error), type: 'error' })
+        this.showToast({ message: this.fpErrorMessage(error), type: 'error' })
       }
     } finally {
       this.isFpBusy = false
@@ -710,7 +662,7 @@ export class AuthUI {
         this.renderMain()
       } catch (error) {
         if (!(error instanceof DOMException && (error.name === 'NotAllowedError' || error.name === 'AbortError'))) {
-          this.showToast({ message: this.errorMessage(error), type: 'error' })
+          this.showToast({ message: this.fpErrorMessage(error), type: 'error' })
         }
       } finally {
         this.isFpBusy = false
@@ -729,7 +681,7 @@ export class AuthUI {
         this.showToast({ message: 'Fingerprint changed — register again.', type: 'warning' })
         this.renderMain()
       } else if (!(error instanceof DOMException && (error.name === 'NotAllowedError' || error.name === 'AbortError'))) {
-        this.showToast({ message: this.errorMessage(error), type: 'error' })
+        this.showToast({ message: this.fpErrorMessage(error), type: 'error' })
       }
     } finally {
       this.isFpBusy = false
@@ -836,13 +788,13 @@ export class AuthUI {
     this.stopBotIdleAnimation?.()
     this.stopBotIdleAnimation = startTimedLoop(() => {
       const bot = this.container.querySelector<HTMLElement>('.brand-emblem')
-      if (!bot || this.currentScreen !== 'v-start' || this.isBotAnimating) return
+      if (!bot || this.currentScreen !== 'v-code' || this.isBotAnimating) return
       if (bot.dataset.mood && !['idle', 'curious'].includes(bot.dataset.mood)) return
       this.setBotMood('curious')
       if (this.botIdleRevertTimer !== undefined) clearTimeout(this.botIdleRevertTimer)
       this.botIdleRevertTimer = window.setTimeout(() => {
         this.botIdleRevertTimer = undefined
-        if (this.currentScreen === 'v-start' && !this.isBotAnimating && bot.dataset.mood === 'curious') this.setBotMood('idle')
+        if (this.currentScreen === 'v-code' && !this.isBotAnimating && bot.dataset.mood === 'curious') this.setBotMood('idle')
       }, 1200)
     }, 5200)
   }
@@ -886,6 +838,18 @@ export class AuthUI {
 
   private errorMessage(error: unknown): string {
     return error instanceof Error ? error.message : 'Something went wrong. Please try again.'
+  }
+
+  /** Fingerprint failures show the exact browser error (name + message) so the cause is diagnosable. */
+  private fpErrorMessage(error: unknown): string {
+    if (error instanceof DOMException) {
+      const detail = error.message ? `${error.name}: ${error.message}` : error.name
+      if (error.name === 'SecurityError') {
+        return `${detail} (page HTTPS/localhost par kholo, aur domain sahi honi chahiye)`
+      }
+      return detail
+    }
+    return this.errorMessage(error)
   }
 
   /** Main screen — no accounts, just device security controls. */
