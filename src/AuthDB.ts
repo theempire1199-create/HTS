@@ -1,5 +1,5 @@
 import type { AuthDBData, SignupDetails, User } from './index'
-import { isValidContact, isValidEmail, normalize, normalizeContact } from './index'
+import { identifiersEqual, isValidContact, isValidEmail, normalize } from './index'
 import { reportStorageUnavailable } from './Notify'
 import {
   AUTH_DB_KEY,
@@ -107,8 +107,9 @@ export class AuthDB {
   private findUserRecord(identifier: string): User | null {
     const key = normalize(identifier)
     if (this.data.users[key]) return this.data.users[key]
-    const contactKey = normalizeContact(identifier).toLowerCase()
-    return Object.values(this.data.users).find(user => normalizeContact(user.contact).toLowerCase() === contactKey) || null
+    // Fall back to the tolerant matcher so a contact saved as "+9198..." is
+    // still found when entered as "98...", "098...", or with spaces/dashes.
+    return Object.values(this.data.users).find(user => identifiersEqual(user.contact, identifier) || identifiersEqual(user.email, identifier)) || null
   }
 
   findUser(identifier: string): Omit<User, 'passwordSalt' | 'passwordHash'> | null {
@@ -120,15 +121,6 @@ export class AuthDB {
 
   hasAccount(identifier: string): boolean {
     return this.findUserRecord(identifier) !== null
-  }
-
-  /** Admin-safe account list with password salts and hashes stripped. */
-  listUsers(): Array<Omit<User, 'passwordSalt' | 'passwordHash'>> {
-    return Object.values(this.data.users).map(({ passwordSalt: _salt, passwordHash: _hash, ...user }) => user)
-  }
-
-  listLoginEvents(): AuthDBData['logins'] {
-    return [...this.data.logins].sort((a, b) => b.timestamp - a.timestamp)
   }
 
   private async hashPassword(password: string, salt: Uint8Array): Promise<Uint8Array> {
@@ -226,13 +218,6 @@ export class AuthDB {
 
   logout(): void {
     AuthDB.safeRemove(CURRENT_USER_STORAGE_KEY)
-  }
-
-  clearAll(): void {
-    this.data = { users: {}, logins: [] }
-    this.otps.clear()
-    this.persist()
-    this.logout()
   }
 }
 

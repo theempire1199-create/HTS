@@ -36,11 +36,3 @@ export function recordLoginDetail(identifier: string): void {
     // Login still succeeds when browser storage is restricted.
   }
 }
-
-export function getLoginDetails(): LoginDetailRecord[] {
-  return readRecords()
-}
-
-export function getLastLoginDetail(): LoginDetailRecord | null {
-  return readRecords()[0] || null
-}

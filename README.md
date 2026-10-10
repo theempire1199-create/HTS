@@ -9,7 +9,7 @@ npm run dev
 
 Open the local URL printed by Vite. For a production bundle, run `npm run build`; `npm run preview` serves that bundle locally.
 
-The local activity dashboard is available at `/admin-panel/` while the Vite server is running. It reads the password-free signup and login metadata stored by this browser.
+Signup and login metadata is stored in this browser (password-free) and can be read via the helpers in `src/LoginDetails.ts` and `src/SignupDetails.ts`.
 
 ## Available flows
 

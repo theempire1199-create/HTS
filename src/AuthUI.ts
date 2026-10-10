@@ -4,7 +4,7 @@ import { identifiersEqual, isValidContact, isValidEmail, isValidIdentifier } fro
 import { rafThrottle, startTimedLoop } from './PerformanceLayer'
 import { recordLoginDetail } from './LoginDetails'
 import { recordSignupDetail } from './SignupDetails'
-import { currentPermission, enableNotifications, notifySupported, prefEnabled, pushLocal, setPref } from './Notify'
+import { currentPermission, enableNotifications, notifySupported, onStorageUnavailable, prefEnabled, pushLocal, setPref } from './Notify'
 import {
   ACCESS_PASSCODE,
   FP_CRED_KEY,
@@ -12,12 +12,7 @@ import {
   SECURING_DATA_LABEL,
   STORAGE_UNAVAILABLE_MESSAGE,
 } from './utils/constants'
-
-const BELL_ON_ICON = '<svg class="bell-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M6 8a6 6 0 0 1 12 0c0 7 3 9 3 9H3s3-2 3-9"/><path d="M10.3 21a1.94 1.94 0 0 0 3.4 0"/></svg>'
-const BELL_OFF_ICON = '<svg class="bell-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M8.7 3A6 6 0 0 1 18 8c0 4 1.4 6.3 2.3 7.5"/><path d="M6.3 6.3C6.1 6.9 6 7.4 6 8c0 7-3 9-3 9h14"/><path d="M10.3 21a1.94 1.94 0 0 0 3.4 0"/><line x1="2" y1="2" x2="22" y2="22"/></svg>'
-
-const EYE_OFF_ICON = '<svg class="eye-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M9.88 9.88a3 3 0 1 0 4.24 4.24"/><path d="M10.73 5.08A10.43 10.43 0 0 1 12 5c7 0 11 8 11 8a18.5 18.5 0 0 1-2.16 3.19 15.6 15.6 0 0 1-2.66 2.58"/><path d="M6.61 6.61A13.5 13.5 0 0 0 1 12s3 8 11 8a9.74 9.74 0 0 0 5.39-1.61"/><line x1="2" y1="2" x2="22" y2="22"/></svg>'
-const EYE_ON_ICON = '<svg class="eye-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M2 12s3-7 10-7 10 7 10 7-3 7-10 7-10-7-10-7Z"/><circle cx="12" cy="12" r="3"/></svg>'
+import { BELL_OFF_ICON, BELL_ON_ICON, EYE_OFF_ICON, EYE_ON_ICON } from './utils/icons'
 
 function bufferToBase64url(buffer: ArrayBuffer): string {
   const bytes = new Uint8Array(buffer)
@@ -65,7 +60,11 @@ export class AuthUI {
   private botFallResetTimer: number | undefined
   private botIdleRevertTimer: number | undefined
   private testNotificationTimers: number[] = []
-  private storageUnavailableListener: (() => void) | undefined
+  private storageUnavailableUnsubscribe: (() => void) | undefined
+  private mouseTilt: { handler: (event: MouseEvent) => void; cancel: () => void } | undefined
+  private touchTilts: Array<{ card: HTMLElement; handler: (event: TouchEvent) => void; cancel: () => void }> = []
+  private containerClickHandler: ((event: Event) => void) | undefined
+  private containerSubmitHandler: ((event: Event) => void) | undefined
   private isFpBusy = false
   private fpAttempts = 0
   private initialized = false
@@ -227,6 +226,7 @@ export class AuthUI {
           <div class="passcode-dots" id="passcode-dots" aria-hidden="true"><i></i><i></i><i></i><i></i><i></i><i></i></div>
           <div class="input-wrap passcode-wrap"><input id="passcode-input" inputmode="numeric" autocomplete="one-time-code" maxlength="6" placeholder="••••••" aria-label="6-digit access code"></div>
           <div class="passcode-error" id="passcode-error" hidden>Wrong code, try again</div>
+          <button class="passcode-fp" id="fp-button" type="button" data-action="fingerprint" hidden aria-label="Unlock with fingerprint"><span class="passcode-fp-icon" aria-hidden="true">&#9757;</span><span id="fp-label">Use fingerprint</span></button>
           <button class="passcode-alt" type="button" data-action="show-screen" data-screen="v-login">try another way</button>
         </div>
       </div>
@@ -300,11 +300,9 @@ export class AuthUI {
     })
 
     // Surface a friendly toast whenever any localStorage write fails.
-    const storageWarning = (): void => {
+    this.storageUnavailableUnsubscribe = onStorageUnavailable(() => {
       this.showToast({ message: STORAGE_UNAVAILABLE_MESSAGE, type: 'warning' })
-    }
-    window.addEventListener('hts:storage-unavailable', storageWarning)
-    this.storageUnavailableListener = storageWarning
+    })
 
     const loginCard = this.container.querySelector<HTMLElement>('#card1')
     let borderTimer: number | undefined
@@ -329,7 +327,7 @@ export class AuthUI {
       if (input && document.activeElement !== input) input.focus()
     })
 
-    this.container.addEventListener('click', (event) => {
+    this.containerClickHandler = (event) => {
       const target = event.target instanceof Element ? event.target.closest<HTMLElement>('[data-action]') : null
       if (!target) return
       const action = target.dataset.action
@@ -345,9 +343,10 @@ export class AuthUI {
       if (action === 'signup-prev') this.retreatSignupStep()
       if (action === 'logout') this.logout()
       if (action === 'terms-link' || action === 'privacy-link') event.preventDefault()
-    })
+    }
+    this.container.addEventListener('click', this.containerClickHandler)
 
-    this.container.addEventListener('submit', (event) => {
+    this.containerSubmitHandler = (event) => {
       event.preventDefault()
       const form = event.target
       if (!(form instanceof HTMLFormElement)) return
@@ -357,7 +356,8 @@ export class AuthUI {
       }
       if (form.id === 'signup-form') void this.handleSignup(form)
       if (form.id === 'reverify-form') void this.handleReverify(form)
-    })
+    }
+    this.container.addEventListener('submit', this.containerSubmitHandler)
 
     this.container.querySelector<HTMLInputElement>('#rv-otp')?.addEventListener('input', (event) => {
       const input = event.currentTarget as HTMLInputElement
@@ -387,16 +387,15 @@ export class AuthUI {
     this.attachInputEffects(this.container.querySelector<HTMLInputElement>('#su-confirm-password'), null, true)
 
     const tiltCards = [
-      this.container.querySelector<HTMLElement>('#card2'),
       this.container.querySelector<HTMLElement>('#card3'),
     ].filter((card): card is HTMLElement => card !== null)
-    const mouseTilt = rafThrottle<MouseEvent>((event) => {
+    this.mouseTilt = rafThrottle<MouseEvent>((event) => {
       const x = event.clientX / window.innerWidth - .5
       const y = event.clientY / window.innerHeight - .5
       tiltCards.forEach(card => { card.style.transform = `perspective(1000px) rotateX(${2 - y * 6}deg) rotateY(${-2 + x * 6}deg)` })
     })
-    document.addEventListener('mousemove', mouseTilt.handler, { passive: true })
-    tiltCards.forEach(card => {
+    document.addEventListener('mousemove', this.mouseTilt.handler, { passive: true })
+    this.touchTilts = tiltCards.map(card => {
       const touchTilt = rafThrottle<TouchEvent>((event) => {
         const touch = event.touches[0]
         if (!touch) return
@@ -405,6 +404,7 @@ export class AuthUI {
         card.style.transform = `perspective(1000px) rotateX(${2 - y * 6}deg) rotateY(${-2 + x * 6}deg)`
       })
       card.addEventListener('touchmove', touchTilt.handler, { passive: true })
+      return { card, handler: touchTilt.handler, cancel: touchTilt.cancel }
     })
 
     document.addEventListener('keydown', this.handleEscape)
@@ -606,10 +606,26 @@ export class AuthUI {
     this.stopBotIdleAnimation?.()
     this.stopBotIdleAnimation = undefined
     document.removeEventListener('keydown', this.handleEscape)
-    if (this.storageUnavailableListener) {
-      window.removeEventListener('hts:storage-unavailable', this.storageUnavailableListener)
-      this.storageUnavailableListener = undefined
+    if (this.mouseTilt) {
+      document.removeEventListener('mousemove', this.mouseTilt.handler)
+      this.mouseTilt.cancel()
+      this.mouseTilt = undefined
     }
+    this.touchTilts.forEach(({ card, handler, cancel }) => {
+      card.removeEventListener('touchmove', handler)
+      cancel()
+    })
+    this.touchTilts = []
+    if (this.containerClickHandler) {
+      this.container.removeEventListener('click', this.containerClickHandler)
+      this.containerClickHandler = undefined
+    }
+    if (this.containerSubmitHandler) {
+      this.container.removeEventListener('submit', this.containerSubmitHandler)
+      this.containerSubmitHandler = undefined
+    }
+    this.storageUnavailableUnsubscribe?.()
+    this.storageUnavailableUnsubscribe = undefined
   }
 
   /** Persist the fingerprint store with a friendly warning when storage is blocked. */

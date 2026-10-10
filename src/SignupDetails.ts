@@ -44,11 +44,3 @@ export function recordSignupDetail(details: Omit<SignupDetailRecord, 'signedUpAt
   }
   writeRecords([record, ...readRecords().filter(existing => existing.email !== record.email)])
 }
-
-export function getSignupDetails(): SignupDetailRecord[] {
-  return readRecords()
-}
-
-export function getSignupDetail(): SignupDetailRecord | null {
-  return readRecords()[0] || null
-}

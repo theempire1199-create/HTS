@@ -688,6 +688,10 @@ body[data-screen="v-start"] .notify-bell, body[data-screen="v-work-progress"] .n
 .passcode-error { margin-top: 12px; color: #b4233f; font-size: 12.5px; font-weight: 800; }
 .passcode-alt { margin-top: 14px; border: 0; color: var(--purple); background: none; cursor: pointer; font-size: 13.5px; font-weight: 700; }
 .passcode-alt:hover { color: var(--accent); }
+.passcode-fp { margin-top: 12px; display: inline-flex; align-items: center; gap: 8px; border: 1.5px solid rgba(124,58,237,.35); border-radius: 14px; padding: 9px 16px; background: rgba(124,58,237,.06); color: var(--purple); font-size: 13.5px; font-weight: 700; cursor: pointer; }
+.passcode-fp:hover { background: rgba(124,58,237,.12); }
+.passcode-fp.fp-busy { opacity: .6; pointer-events: none; }
+.passcode-fp-icon { font-size: 16px; line-height: 1; }
 
 /* Main screen fully fresh: no ball, brand name, tagline, or bottom text. */
 body[data-screen="v-work-progress"] .site-header,
