@@ -1,5 +1,5 @@
 {
-  "name": "hasan-tech-studio-auth",
+  "name": "hasan-tech-studio",
   "private": true,
   "version": "1.0.0",
   "type": "module",
@@ -13,6 +13,7 @@
     "vite": "^7.3.7"
   },
   "dependencies": {
+    "lottie-web": "^5.12.2",
     "ngrok": "^4.3.3"
   }
 }

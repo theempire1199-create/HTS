@@ -57,7 +57,7 @@ export class AuthUI {
   private fpAttempts = 0
   private initialized = false
   private stopBotIdleAnimation: (() => void) | undefined
-  private readonly companionImage = new URL('./assets/IMG-20261008-WA6370.jpg', import.meta.url).href
+  private readonly companionImage = '/IMG-20261008-WA6370.jpg'
 
   constructor(container: HTMLElement) {
     this.container = container
