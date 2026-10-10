@@ -1,0 +1,537 @@
+================================================================================
+HASAN TECH STUDIO — PROJECT INFO / CONTEXT MEMORY FILE
+================================================================================
+Purpose of this file:
+- Single source of truth so any new AI agent / session can understand the full
+  project WITHOUT re-reading every file.
+- Read this file first on every new session. Only re-read source files if you
+  need exact code lines.
+- Last full refresh: 2026-10-10 (UTC) — every section re-verified against source.
+
+--------------------------------------------------------------------------------
+1. HIGH-LEVEL SUMMARY
+--------------------------------------------------------------------------------
+Name: HASAN TECH STUDIO Auth / Identity Portal
+Package name (package.json): hasan-tech-studio-auth, v1.0.0, type: module, private:true
+Tagline: "the tech of future ....." / "the independent tech......" / "powered by HASAN TECHNOLOGY PVT LTD"
+Brand intro animation text: "HTS.OS". Start-screen portrait + "asif hasan" name REMOVED (2026-10-10);
+portrait JPG still shows in header orb. Splash bottom credit: "developed by-" / "HASAN TECH STUDIO".
+
+What it is:
+- Frontend-only local prototype: 10s splash -> signup / login / 6-digit code-gate
+  (already-login users) -> EMPTY main screen, plus local activity dashboard (admin-panel).
+- NO backend, NO email/SMS provider, NO real server auth. All data lives in
+  browser localStorage. OTP codes are shown on-screen (demo toast) for testing.
+  Code-gate passcode is hardcoded demo constant ACCESS_PASSCODE='119911'.
+- Passwords are salted + hashed with WebCrypto PBKDF2 (210k iterations, SHA-256)
+  before storage. Never stored in plaintext.
+- Heavy custom CSS 3D / glassmorphism UI (white + purple ONLY, pink fully removed
+  2026-10-10) with animated companion portrait + single-card signup stepper.
+
+Stack:
+- TypeScript (strict) + Vite 7.3.7 + vanilla DOM (no React/Vue/router/store).
+- Build: `tsc --noEmit && vite build`. Dev: `vite`. Preview: `vite preview`.
+- TS config: target ES2022, module ESNext, moduleResolution Bundler,
+  allowImportingTsExtensions:true, lib [ES2022, DOM, DOM.Iterable],
+  strict, noUnusedLocals, noUnusedParameters, noFallthroughCasesInSwitch.
+- Single entry HTML: index.html -> <div id="app"> + <script type="module" src="/main.ts">
+- Multi-page Vite build (vite.config.ts):
+  input.main = ./index.html
+  input.admin = ./admin-panel/index.html
+  So `/admin-panel/` works in dev and in dist.
+
+Run locally:
+  npm install
+  npm run dev   -> open Vite URL, main app at /, dashboard at /admin-panel/
+  npm run build -> tsc + vite build -> dist/
+  npm run preview -> serve dist locally
+
+LIVE (deployed 2026-10-10, verified serving): https://hasantechstudio.vercel.app/
+  / = app, /admin-panel/ = dashboard, /manifest.webmanifest + /sw.js (v2) + /icons/* OK.
+
+--------------------------------------------------------------------------------
+2. FILE MAP (ALL SOURCE FILES)
+--------------------------------------------------------------------------------
+Root /public/HASAN_TECH_STUDIO/ :
+- index.html ............ Shell: #app root, loads /main.ts, manifest + PWA meta + icons.
+- main.ts ............... Bootstrap: CSS import, AuthUI init, bell refresh via init/showScreen,
+                          PROD-only SW register (/sw.js) + instant-update wiring (updatefound->
+                          pushLocal "App updated" + auto-reload after 1500ms when controlled,
+                          update() on app-visible + every 30 min).
+- public/ ............... Copied to dist/ as-is: manifest.webmanifest (HTS, standalone,
+                          portrait, purple theme, Login/Admin shortcuts), sw.js
+                          (hts-cache-v2: network-first navigations for instant updates,
+                          cache-first assets, allSettled-safe install, notificationclick),
+                          icons/ (icon-192/512 + maskable, generated stdlib-only, purple
+                          orb mark), .well-known/assetlinks.json (TWA template with
+                          PASTE_* placeholders — fill after PWABuilder gives package+SHA256).
+- ANDROID-APK.md ........ APK guide: instant PWA install vs Bubblewrap TWA + assetlinks
+                          template + keystore SHA-256 steps. (Sandbox has no Java/SDK,
+                          so no .apk binary is built here.)
+- main.css .............. ~744 lines. ALL main-app styles: ambient blobs, brand
+                          emblem/orb, bot mascot variants (hidden fallback), login orb glass,
+                          signup SINGLE-CARD stepper, start-screen HTS.OS intro + dev credit,
+                          passcode popup, real SVG eye icons, makkhan-smooth perf layer,
+                          tagline wave, toasts, responsive + reduced-motion.
+- index.ts .............. Shared types (User, LoginRecord, AuthDBData, ScreenId,
+                          OTPPurpose, ToastOptions, SignupDetails) + validation helpers
+                          (normalizeContact, isValidEmail, isValidContact, isValidIdentifier).
+- AuthDB.ts ............. Auth storage + crypto + OTP (singleton authDB). See §4.
+- AuthUI.ts ............. All UI rendering + event handling + flows (~892 lines). See §5.
+- ClientContext.ts ...... Browser fingerprint for audit logs. See §6.
+- LoginDetails.ts ....... localStorage log of successful logins (metadata only). See §6.
+- SignupDetails.ts ...... localStorage log of signup public profiles. See §6.
+- Notify.ts ............. Single-user LOCAL notifications (no server/push service).
+                          notifySupported/currentPermission/prefEnabled/setPref (hts_notify_v1),
+                          enableNotifications() (one-click, gesture-safe), pushLocal(title, body)
+                          (SW showNotification w/ icon+badge+vibrate+tag, silent no-op unless on+granted).
+- PerformanceLayer.ts ... rafThrottle + startTimedLoop helpers. See §7.
+- IMG-20261008-WA6370.jpg  Brand portrait / companion avatar. Header orb ONLY
+                          (companion-image); start-screen idol usage REMOVED.
+                          Loaded via `new URL('./IMG-....jpg', import.meta.url).href`.
+- package.json, tsconfig.json, vite.config.ts, vercel.json (Vite preset, dist output,
+  sw.js + manifest no-cache), .gitignore, README.md, dist/
+- ANDROID-APK.md ........ Hosting (Vercel) + APK guide: §0 insecure-http error fix,
+  §Vercel dashboard/CLI deploy, Road 0 PWABuilder online APK (no PC/SDK — phone se hi),
+  Road 1 PWA install, Road 2 Bubblewrap TWA + assetlinks template, 10-access manifest snippet,
+  Road 3 native Kotlin app (open in Studio / GitHub Actions auto-APK).
+- android-app/ ......... PROPER NATIVE app (Kotlin + Compose, package studio.hasan.tech):
+  Gradle 8.7 + AGP 8.5.2 + Kotlin 2.0.20 + Compose BOM 2024.06.00, minSdk 26, JDK 17.
+  Same splash-10s/login/signup-1-card/code-119911/empty-main/admin, same validators,
+  same PBKDF2 (210k/SHA-256/256-bit), BiometricPrompt gate + 3 strikes, channels wali
+  notifications, 10 permissions in manifest. COMPILE yahan NAHI hota (no SDK here,
+  Acode can't build) — Studio me Run ya GitHub Actions (`.github/workflows/android.yml`
+  push par debug APK artifact deta hai). Code compiler-verified nahi hai yahan —
+  Studio/CI me pehla sync/build dekh lena.
+- .github/workflows/android.yml .. CI: push par cloud me assembleDebug + artifact upload.
+- admin-panel/ :
+  - index.html .......... Shell: <main id="admin-app"> + <script src="./admin.ts">
+  - admin.ts ............ Dashboard logic (148 lines). Reads AuthDB + Login/Signup
+                          details, renders metric cards + tables + search. See §8.
+  - admin.css ........... Dashboard styles only (62 lines), Inter font, metric grid.
+
+No tests, no linter config, no backend, no .env, no API keys.
+node_modules/ + dist/ are generated (gitignored).
+
+--------------------------------------------------------------------------------
+3. SHARED TYPES (index.ts)
+--------------------------------------------------------------------------------
+User {
+  id: string; // = normalized lowercase email (primary key)
+  name: string;
+  email: string; // stored lowercased/trimmed
+  contact: string; // trimmed, NOT lowercased for display but normalized for lookup
+  passwordSalt: string; // base64 16-byte salt
+  passwordHash: string; // base64 32-byte PBKDF2 output
+  createdAt: number; // Date.now()
+  lastLoginAt: number; // 0 until first login
+  loginCount: number;
+}
+LoginRecord { userId: string; timestamp: number; }
+AuthDBData { users: Record<string, User>; logins: LoginRecord[]; } // key = email lowercase
+ScreenId = 'v-start' | 'v-login' | 'v-signup' | 'v-reverify' | 'v-work-progress'
+OTPPurpose = 'recovery' // only one purpose currently; code supports extension
+ToastOptions { message: string; duration?: number; type?: success|error|info|warning }
+SignupDetails { name, email, contact, password: string }
+
+Validation helpers live here too (full spec in §10): normalizeContact(),
+isValidEmail(), isValidContact(), isValidIdentifier().
+
+--------------------------------------------------------------------------------
+4. AuthDB.ts — STORAGE, CRYPTO, OTP (BACKEND REPLACEMENT)
+--------------------------------------------------------------------------------
+Class: AuthDB (singleton, accessed as `authDB = AuthDB.getInstance()`)
+
+localStorage keys:
+- hts_auth_db_v4 ........ Main DB JSON {users, logins} (v4 fresh wiped on 2026-10-10)
+- hts_current_user_v4 ... Current session user id (email key)
+- hts_auth_schema = '4' . Schema version guard. If mismatch, wipes DB + session + login/signup detail logs.
+- LEGACY keys deleted on boot: hts_auth_db_v3, hts_current_user_v3
+- OTPs are IN-MEMORY only: private otps = Map<normalizedId, {code, expiresAt, purpose}>
+  OTP_TTL = 5 * 60 * 1000 (5 min). 6-digit zero-padded from crypto.getRandomValues.
+
+Security:
+- PBKDF2_ITERATIONS = 210_000, hash SHA-256, derive 256 bits via crypto.subtle.
+- Requires secure context (HTTPS or localhost), else throws
+  "Secure password storage requires HTTPS or localhost."
+- encode/decode = btoa/atob base64 for Uint8Array.
+- verifyPassword uses constant-time XOR compare.
+- findUser / listUsers STRIP passwordSalt/passwordHash before returning.
+
+Key methods:
+- loadFromStorage(): validates JSON with isRecord/isStoredUser guards, filters bad entries.
+- persist(): JSON.stringify to hts_auth_db_v4
+- findUserRecord(identifier): lookup by normalized email key OR contact match via
+  normalizeContact (spaces/dashes/brackets ignored, case-insensitive).
+  normalize = trim().toLowerCase()
+- findUser(identifier): public user or null
+- hasAccount(identifier): boolean
+- listUsers(): public users array (for admin)
+- listLoginEvents(): logins sorted desc by timestamp
+- hashPassword(password, salt), verifyPassword(password, user) [private]
+- startOTP(identifier, purpose): generates + stores code, returns code (caller displays it)
+- verifyOTP(identifier, code, purpose): checks purpose+expiry+exact match, single-use (deletes).
+  Deletes expired OTPs on failed check.
+- createUser(details: SignupDetails):
+  Validations via shared helpers: name>=3 chars, isValidContact, isValidEmail (see §10),
+  password>=6, duplicate email OR contact -> throw "An account with this email or contact number already exists."
+  Creates User with random 16-byte salt, PBKDF2 hash, loginCount 0.
+- login(identifier, password): finds user, verifies password else throw
+  "Email, contact number, or password is incorrect." On success: updates lastLoginAt,
+  loginCount++, pushes {userId, timestamp}, keeps only last 100 logins, persists,
+  sets hts_current_user_v4.
+- resetPassword(identifier, password): NOT currently wired to UI flow (recovery OTP exists
+  but no reset form yet). Validates len>=6, re-salts + re-hashes.
+- getCurrentUser(): reads session key -> findUser
+- logout(): removes session key (method exists; NO logout button in UI anymore —
+  main screen was cleaned, so session can only be cleared via storage/schema bump).
+- clearAll(): wipes DB + OTPs + logout (no UI calls this).
+
+Important quirks:
+- User.id = emailKey. Contact login works via scan, but session stores email id.
+- Contact uniqueness is enforced via hasAccount(contactKey) scan.
+- Logins array capped at 100, SignupDetails capped at 100, LoginDetails capped at 20.
+
+--------------------------------------------------------------------------------
+5. AuthUI.ts — ALL FRONTEND LOGIC (class AuthUI)
+--------------------------------------------------------------------------------
+Constructor: new AuthUI(container: HTMLElement) where container = #app
+State fields: currentScreen: ScreenId='v-start', otpPurpose='recovery', otpIdentifier='',
+  signupStep 0..5, signupPrefillIdentifier, timers (ALL typed `number | undefined`,
+  ALL set via window.setTimeout — immune to @types/node Timeout mismatch if it ever
+  lands in node_modules), toast/bubble/avatar/focus/splash,
+  isBotAnimating, initialized guard, stopBotIdleAnimation, companionImage URL.
+  (botBubbleIntent field REMOVED — no longer needed after bubble simplification.)
+Module consts: EYE_OFF_ICON / EYE_ON_ICON (real Lucide-style SVG strings),
+  ACCESS_PASSCODE='119911' (demo code-gate).
+
+init():
+- render() + bindEvents() + startBotIdleAnimation() + startSplashTimer() (10s splash)
+- If location.hash === '#reverify', opens reverify screen immediately (splash skipped).
+- SPLASH: v-start is 10-sec splash on app open. startSplashTimer() waits 10000ms,
+  then if still on v-start: if authDB.getCurrentUser() -> showPasscodePopup()
+  (code gate, NO auth screen for already-login users), else showScreen('v-login').
+  showPasscodePopup(): resets input/dots/fpAttempts, shows overlay, refreshFingerprintButton(),
+  then autoFingerprint() (auto biometric prompt if credential stored; keyboard
+  autofocus ONLY when no fingerprint credential exists, so no keyboard flash).
+  Tap/Enter/Space on splash skips early via showScreen which calls clearSplashTimer().
+  showScreen('v-start') restarts timer (Escape case), leaving v-start clears it.
+  showScreen() always hides the passcode overlay. Escape is ignored while popup open.
+  Field: splashTimer.
+
+render(): sets container.innerHTML with:
+- 3 ambient blobs, site-header brand-lockup:
+  brand-emblem [brand-ring, brand-orb [companion-closed-eyes, img.companion-image,
+  .bot-companion fallback mascot], brand-shine, companion-talk>companion-bubble],
+  brand-name "HASAN TECH STUDIO", brand-tagline per-char spans (wave anim).
+- main.auth-shell with 5 <section.view>:
+  #v-start SPLASH (show by default): .hts-intro with hts-stage-glow,
+    hts-top-lockup "HTS.OS" per-letter, hts-glow-line,
+    hts-tagline "the independent tech......",
+    bottom .hts-dev-credit ("developed by-" + "HASAN TECH STUDIO" gradient).
+    REMOVED: .hts-idol portrait img + .hts-idol-name "asif hasan" (per user request).
+    Whole section is role=button, data-action=show-screen data-screen=v-login
+    (tap anywhere to skip splash early). Auto-advances after 10s.
+  #v-login: h1 "INITIALIZE ACCESS", .login-orb #card1 with form#login-form:
+    #li-id (identifier, full-width: symmetric 14px padding, NO right eye-space),
+    #li-pw (password type=password) + real SVG .eye button (EYE_OFF_ICON initially),
+    mirrors #mirror-li-id/pw, input-pencil cursors, button.btn-enter "ENTER".
+    REMOVED: .identifier-hit-area overlay span (it blocked taps; email now focuses
+    natively like password). Its JS handler + CSS rule also deleted.
+  #v-signup SINGLE CARD STEPPER: .signup-roller is THE one card (outer border/shadow),
+    #signup-track is grid stack (no slide translate), 6 .signup-step layers fade
+    (is-active visible, others hidden). Only title+input change one-by-one.
+    Arrows pinned: next bottom-right, back bottom-left, JOIN bottom-center + back left.
+    form#signup-form.signup-wizard with 6 fieldsets:
+    step0 name #su-name, step1 contact #su-contact, step2 email #su-email,
+    step3 password #su-password, step4 confirm #su-confirm-password, step5 terms #su-terms + JOIN button.
+    Prev/Next buttons data-action=signup-next/prev. Progress dots + "1 / 6".
+    Back to Login button.
+  #v-work-progress: EMPTY + FRESH main screen (content cleaned 2026-10-10).
+    Just <div class="work-progress-screen"></div>, no heading, no logout button,
+    and CSS hides .site-header (ball, brand name, tagline) + .site-footer
+    (bottom text) on this screen only. Other screens unaffected.
+  #v-reverify: title "Re-verify 🔄", form#reverify-form with #rv-id + Send OTP button,
+    #rv-otp 6-digit, VERIFY button. Back to Login.
+- PASSCODE POPUP GATE (#passcode-overlay, z-40 under toast): shown ONLY for
+  already-login users after splash. Same glass card theme + pop animation as screens.
+  Const ACCESS_PASSCODE='119911' (AuthUI.ts top). 6 dots fill live, pill input
+  (digits only, maxlength 6, Enter verifies). Auto-verifies on 6th digit.
+  Correct -> hide popup + restoreRememberedSession() (welcome back bubble/toast,
+  go v-work-progress). Wrong -> card shake + error text + toast + auto-clear 650ms.
+  Card tap refocuses input. "Use password" link -> showScreen('v-login') via
+  existing data-action (popup auto-hides), user auths with email/contact+password,
+  fresh login goes straight to empty main screen. "try another way" small link below
+  the code box -> same login path. Fingerprint system FULLY INTACT (auto system-prompt
+  after splash, silent fallback, 3-strike logic, enroll/verify/WebAuthn code all live) —
+  only the on-card button + "fingerprint unlock" text are hidden per user request, so
+  the card shows code + try-another-way only. Re-adding the button = 1 HTML block.
+  Store: hts_fp_cred_v1 {userId: rawId-base64url}. Helpers bufferToBase64url/
+  base64urlToBytes/readFpStore. Methods: fingerprintSupported/refreshFingerprintButton/
+  fpCredentialIdForCurrentUser/registerFpStrike/registerFingerprint/
+  authenticateFingerprint/handleFingerprint/autoFingerprint. Fields: isFpBusy, fpAttempts.
+  Methods: showPasscodePopup/hidePasscodePopup/
+  handlePasscodeInput/updatePasscodeDots/verifyPasscode.
+- footer.site-footer "powered by HASAN TECHNOLOGY PVT LTD", div#toast.
+- One-click NOTIFY BELL (.notify-bell, fixed top-right, hidden on splash+main):
+  BELL_ON/OFF SVGs, toggleNotifications() (one tap: on->off pref, off->request perm;
+  granted->pref+toast+demo push, denied->settings hint), refreshBell() on init +
+  every showScreen (also wires bell long-press/right-click -> sendTestNotifications:
+  3 staggered pushes hts-test-1/2/3 with different messages). toggleNotifications()
+  refuses early on insecure http (Chrome blocks the prompt there — toast explains
+  HTTPS/localhost need; see ANDROID-APK.md §0). pushLocal fires on:
+  fresh login, signup, code unlock, fingerprint unlock/enroll, app update. SW
+  notificationclick focuses/opens the app.
+- Sets document.body.dataset.screen for CSS screen-specific rules.
+
+Screens / navigation:
+- showScreen(screen): if v-start -> startSplashTimer(), else clearSplashTimer();
+  toggles .show/hidden on .view, sets body dataset, history.replaceState #hash,
+  if v-signup -> resetSignupWizard(prefill), scroll top, focus h1.
+- Valid screens: v-start, v-login, v-signup, v-reverify, v-work-progress.
+- Escape key -> back to v-start (unless already there; IGNORED while passcode popup open).
+- v-start keydown Enter/Space -> v-login.
+- restoreRememberedSession(): if authDB.getCurrentUser(), prefill #li-id with email,
+  setBot happy, bubble "welcome back", toast "Remembered session", go v-work-progress.
+  Called ONLY from passcode success (and fresh-login never calls it — handleLogin
+  navigates directly).
+
+Login flow (handleLogin):
+- Reads FormData identifier+password. validIdentifier = isValidIdentifier() (§10).
+- If invalid -> bot worried + bot-error shake + flashLoginFields + toast error.
+  (NO bubble on errors anymore.)
+- If pw<6 -> same error path, no bubble.
+- If !authDB.hasAccount(identifier) -> bot happy + success + bubble
+  "welcome to hasan tech studio", save signupPrefillIdentifier,
+  toast "Not signed up yet", go v-signup.
+- Else try authDB.login -> recordLoginDetail(identifier) -> bot happy/success/
+  bubble "welcome back", toast "Welcome back, {name}!", go v-work-progress
+  (fresh password login goes STRAIGHT to main, no passcode).
+- Catch -> worried/error + flash + toast errorMessage, no bubble.
+
+Signup wizard:
+- resetSignupWizard(prefill): form.reset(), step=0, if prefill contains @ -> fill email else contact, updateSignupRoller().
+- updateSignupRoller(): toggles is-active/aria-hidden on steps (CSS grid fade, NOT slide;
+  --signup-step var still set but unused by CSS), updates "N / 6", dots,
+  focuses active input after 260ms.
+- validateSignupStep(step): per-step checks via isValidContact/isValidEmail (§10) with
+  toast errors (name>=3, valid contact, valid email, pw>=6, confirm==pw, terms checked).
+- advanceSignupStep() (max 5), retreatSignupStep() (min 0).
+- handleSignup(form): re-validates ALL fields via helpers, checks terms,
+  calls authDB.createUser -> recordSignupDetail({name,contact,email}) -> prefill login email,
+  toast "signed up! Please login now." -> showScreen v-login. Catch -> toast error.
+- Signup arrows (2026-10-10 tuning): next pinned right:66px effective, back left:24px
+  (#signup-track .signup-step-actions .signup-next { margin-right:42px }).
+
+Reverify / OTP flow:
+- configureReverify(purpose, identifier): sets otpPurpose/Identifier, resets title/inputs.
+- sendOTP(): reads #rv-id, validates email OR contact, if purpose recovery and no account -> error.
+  Sets otpIdentifier, calls issueOTP(), clears #rv-otp.
+- issueOTP(): code = authDB.startOTP(...), Send button -> "Sent ✓" + .sent green, toast
+  "📩 OTP sent for reverify (demo: {code})" — code visible because no SMS/email.
+- handleReverify(): reads #rv-id + #rv-otp, validates identifier, requires identifier matches
+  otpIdentifier (case-insensitive) else "Send a verification code... first.", then
+  authDB.verifyOTP else "incorrect or expired", success -> toast "Re-verified!" -> v-login.
+- #rv-otp input sanitized to digits max 6.
+- Entry via #reverify hash only; no visible link from login screen currently.
+
+Mascot / companion logic:
+- .brand-emblem is role=button tabindex 0. pointerdown / Enter/Space -> triggerBotFall()
+  which calls showGreeting() + vibrate anim (isBotAnimating guard).
+- pointermove sets --gaze-x/y + mood curious; pointerleave resets.
+- setBotMood(idle|curious|listening|worried|happy): sets data-mood unless bot-falling.
+- flashBot(bot-error|bot-success): temporary anim class 850ms.
+- updateBotFromInput(): toggles .input-valid on wraps + .is-ready on ENTER button (green)
+  via isValidIdentifier(); moods only (empty->idle, invalid->worried, ready->happy,
+  partial->listening). NO bubbles here anymore. Focus -> listening, blur -> re-evaluate.
+- showBotBubble(message, duration=2600, reveal=true): sets text, random side-left/right,
+  re-trigger .show, auto-hide, optionally revealAvatar(duration).
+- ONLY TWO bubble messages exist in the whole app: "welcome to hasan tech studio"
+  (new/unknown user) and "welcome back" (returning user). Removed: Hi/Hello/Hey,
+  "Are you sure?", "Wrong input", "Create your account", "Welcome in HASAN TECH STUDIO".
+- revealAvatar/hideAvatar: eye open/close + .avatar-revealed showing companion-image (portrait)
+  over closed-eyes cartoon, auto-hide after duration. Timers cleared properly.
+- showGreeting(): single line — bubble is "welcome back" if authDB.getCurrentUser()
+  else "welcome to hasan tech studio" (3000ms). No more random greetings/sequences.
+- startBotIdleAnimation(): every 5200ms if on v-login/v-start and mood idle/curious and not
+  animating -> curious for 1200ms then idle. Uses PerformanceLayer.startTimedLoop.
+- Login card pointerdown -> .card-awake glow 1100ms.
+- Tilt: #card2/#card3 mousemove/touchmove via rafThrottle (note: #card2 no longer exists in DOM —
+  only #card3 gets tilt; harmless dead ref).
+- togglePassword(button): toggles input type, aria-label, .is-visible, swaps innerHTML
+  between EYE_ON_ICON / EYE_OFF_ICON (+ .eye-pop retrigger anim), re-paints mirror for
+  li-pw, refocus. All 3 password eyes (li-pw, su-password, su-confirm-password) share it.
+- Old .eye-glyph CSS-drawn eyes DELETED; icons are real inline SVGs styled by
+  .eye .eye-icon (22px, stroke currentColor). Colors: light lavender back
+  rgba(124,58,237,.08) + purple #7c3aed icon, hover darker — NO pink anywhere.
+- paintMirror(input, mirror, isPassword): renders per-word spans .w with --word-index,
+  --mirror-scale shrink for long text (min .72 password / .50 email so long emails
+  fit end-to-end), password masked as • when type=password.
+- updatePencil(input): toggles .has-value (hides fake cursor).
+- handlePlainPaste: strips newlines, setRangeText, re-dispatch input.
+- flashLoginFields(): adds .input-error-fill 1500ms, then clears inputs.
+- hapticFeedback(): navigator.vibrate([18,35,18]) on login submit.
+- showToast({message,duration=3000,type}): sets #toast text/class, auto-hide.
+- errorMessage(error): error.message or fallback.
+
+--------------------------------------------------------------------------------
+6. CLIENT CONTEXT + ACTIVITY LOGS (ClientContext.ts, LoginDetails.ts, SignupDetails.ts)
+--------------------------------------------------------------------------------
+ClientContext { source, referrer, userAgent, platform, language, timezone, screen }
+- getClientContext(): source=location.hostname||'local', referrer=document.referrer||'Direct',
+  userAgent/platform/language from navigator, timezone via Intl, screen `${width}×${height}`.
+- unknownClientContext: all 'unknown' fallback.
+
+LoginDetails.ts:
+- STORAGE_KEY hts_login_details_v1, MAX_RECORDS 20
+- LoginDetailRecord { identifier (lowercased), loggedInAt, context }
+- recordLoginDetail(identifier): dedupe by identifier, unshift new, slice 20. Never stores passwords.
+- getLoginDetails(), getLastLoginDetail()
+
+SignupDetails.ts:
+- STORAGE_KEY hts_signup_details_v1, cap 100
+- SignupDetailRecord { name, contact, email (lowercased), signedUpAt, context }
+- recordSignupDetail({name,contact,email}): trims, unshift, dedupe by email.
+- getSignupDetails(), getSignupDetail()
+- readRecords handles both array and legacy single-object shape.
+
+Admin joins these with AuthDB data (see §8).
+
+--------------------------------------------------------------------------------
+7. PerformanceLayer.ts
+--------------------------------------------------------------------------------
+- rafThrottle<T extends Event>(callback): returns {handler, cancel}. Coalesces rapid events
+  to 1 per requestAnimationFrame. Used for mousemove/touchmove tilt + gaze.
+- startTimedLoop(callback, delay): setInterval wrapper returning cleanup clearer.
+  Used for bot idle loop (5200ms) and admin auto-refresh (4000ms).
+
+--------------------------------------------------------------------------------
+8. ADMIN PANEL (admin-panel/admin.ts + admin.css + index.html)
+--------------------------------------------------------------------------------
+Route: /admin-panel/ (both dev + build via vite.config multi-input).
+No auth gate — anyone with same browser+origin sees local data. Privacy note in UI:
+"passwords and secret values are never displayed or collected."
+
+State: { tab: 'joins'|'logins', search: string }
+
+render():
+- accountUsers = authDB.listUsers()
+- detailedSignups = getSignupDetails(); signups = accountUsers.map(user =>
+  matching detail by email OR fallback {name,contact,email,signedUpAt:createdAt, context:unknown})
+  sorted desc by signedUpAt.
+- detailedLogins = getLoginDetails(); logins = authDB.listLoginEvents().map(event =>
+  account email OR userId, join detail where identifier match + |time diff|<5000ms
+  else fallback unknown context).
+- Metric cards: Joined count + last name, Login events count + last id, Latest source + timezone, Storage LOCAL.
+- Tabs: Who joined N / Login activity N. Search box filters name/email/contact/source/referrer/platform.
+- Tables: joins (Member, Contact, Where from, Device, Joined), logins (Identifier, Where from, Device, Logged in).
+- Device col shows platform·screen·timezone + language small, full details in title tooltip.
+- escapeHTML + formatDate (Intl medium/short) helpers.
+- Events: click refresh/tab, input search (preserves focus+cursor across re-render).
+- Auto-refresh every 4000ms via setInterval(render).
+
+--------------------------------------------------------------------------------
+9. STYLES OVERVIEW (main.css + admin.css)
+--------------------------------------------------------------------------------
+main.css theme: white + purple ONLY (all pink removed 2026-10-10: #ec4899->#8b5cf6,
+  #f0abfc->#c4b5fd, pink rgba->purple rgba, mascot pinks->purple/lavender, --pink var
+  renamed --accent holding purple). Kept reds ONLY for error states (#b4233f text,
+  #ffdbe2/#ffe8ec error-field tint, #ef4444 bot-error) + status green/amber.
+  font Segoe UI/system, mobile-first min 320px, #app max 430px centered.
+Key systems:
+- .ambient blurred blobs, .brand-emblem 104px floating/spinning ring + orb with portrait,
+  moods via data-mood (worried/curious/listening/happy) + anim classes (falling/error/success/impact),
+  companion-bubble speech with left/right sides, tagline-char wave.
+- .login-orb: circular glass (multiple border/outline/box-shadow layers, backdrop blur),
+  inner form with pill inputs, green fill when .input-valid, ENTER button turns green .is-ready
+  with liquid wave ::before, mirror text overlay (real input transparent), pencil cursor.
+  Email identifier row is full-width (symmetric 14px padding, no eye gutter).
+  Eye buttons are REAL inline SVG (Lucide-style eye / eye-off, 22px, stroke currentColor,
+  pop anim on toggle), light-lavender back + purple icon.
+- Signup SINGLE CARD: .signup-roller is the one card (outer border/shadow/radius);
+  #signup-track is display:grid stack (transform:none, NO slide); steps fade via
+  opacity/visibility/translateY (.is-active visible); step gloss/edge pseudos disabled;
+  arrows absolute bottom (next right / back left / JOIN center-bottom).
+- Start screen HTS.OS: hides header/footer; NO idol image/name anymore (CSS for
+  .hts-idol/.hts-idol-name remains but unused); HTS.OS extreme gradient typing reveal
+  + breathe, glow line draw+pulse, tagline steps typing, bottom .hts-dev-credit
+  (developed by- / HASAN TECH STUDIO gradient).
+- Main screen (v-work-progress): EMPTY — header/footer force-hidden via
+  body[data-screen="v-work-progress"] rule; only gradient + ambient blobs render.
+- Passcode popup: fixed overlay (blur dim, z-40 under toast z-50), glass card same
+  tokens as signup card, pop-in via `pop` keyframes, dots, pill input, shake keyframes.
+- Makkhan-smooth perf layer (visuals unchanged): smooth scroll, antialiased text,
+  touch-action:manipulation on all buttons (no tap delay), will-change on animated
+  parts (orb/cards/emblem/views/toast/bubble), overscroll-behavior.
+- Toast fixed bottom dark pill.
+- Responsive: 480px orb 400px, 380px compact cards/bubbles, height-based shrinks, reduced-motion disables anims.
+- Legacy mascot CSS (.bot-companion etc.) kept as fallback but hidden via display:none when
+  portrait image present; portrait .companion-image owns look with mood filters + flow/vibrate anims.
+
+admin.css: light purple dashboard, metric-grid 4→2 cols mobile, data-panel glass tables, tabs+search toolbar.
+
+--------------------------------------------------------------------------------
+10. VALIDATION RULES (SINGLE REFERENCE — shared helpers in index.ts)
+--------------------------------------------------------------------------------
+- normalizeContact(v): trim + strip spaces/dashes/dots/brackets, keeps leading +.
+- isValidEmail(e): trim, len<=254, no spaces/.., single @, local<=64, valid chars,
+  no leading/trailing dot, domain has dot, valid labels, TLD /^[A-Za-z]{2,}$/.
+  Blocks a@b.c, abc@gmail, user@.com, test..mail@gmail.com, test@test.
+  Allows test@gmail.com, x@y.co, TEST@GMAIL.COM.
+- isValidContact(c): normalize, then /^\+?[0-9]{7,15}$/, rejects all-same-digit
+  (0000000000), 10-digit without + must be /^[6-9][0-9]{9}$/ (blocks 1234567890),
+  +91 12-digit must be 91+6-9+9 digits. Allows 9876543210, +919876543210,
+  +91 98765 43210, +1 234567890.
+- isValidIdentifier(v) = isValidEmail(v) || isValidContact(v)
+- Used EVERYWHERE: AuthDB.createUser, AuthUI validateSignupStep/handleSignup/
+  handleLogin/updateBotFromInput/handleReverify/sendOTP. AuthDB.findUserRecord
+  compares contacts via normalizeContact (spaces/dashes ignored).
+- Name: trim len >=3
+- Password/secret: len >=6
+- Confirm: === password
+- Terms: must be checked
+- OTP: /^\d{6}$/, 5-min TTL, single-use, purpose must match
+- Email fit: paintMirror shrinks long emails to min scale .50 (passwords .72) so the
+  full address fits the identifier box end-to-end.
+
+--------------------------------------------------------------------------------
+11. CURRENT LIMITATIONS / KNOWN GAPS (DO NOT ASSUME OTHERWISE)
+--------------------------------------------------------------------------------
+- Local-only: data per browser+origin, no sync, no server, clears if localStorage cleared or schema bump.
+- No email/SMS: OTP shown in toast, visible in devtools.
+- No password reset UI: AuthDB.resetPassword exists but no form calls it; reverify only verifies OTP.
+- Session: persists until storage cleared/schema bump — there is NO logout button anymore
+  (main screen cleaned), so users cannot sign out from UI. authDB.logout()/clearAll() exist for code use.
+- Code-gate is a hardcoded demo constant (ACCESS_PASSCODE='119911'), NOT real security —
+  anyone reading source/devtools sees it. Production needs server-side check.
+- Main screen is intentionally EMPTY (fresh) — nothing renders there yet.
+- Admin open: no login gate, shows only same-origin data.
+- Dead refs: AuthUI tilt looks for #card2 (removed) — harmless; #card2 CSS remains.
+  Fully REMOVED 2026-10-10 sanitize: .identifier-hit-area (JS+CSS), old .eye-glyph CSS
+  block, .hts-idol*/keyframes CSS (1-line .eye-glyph safety net kept). Hidden .bot-*
+  mascot CSS intentionally RETAINED as fallback (invisible, zero render cost concern).
+- Hardening: ALL localStorage access via safeGet/safeSet/safeRemove (restricted/
+  private-mode browsers never crash login/session); history.replaceState wrapped in
+  try/catch (sandboxed iframes safe).
+- Accessibility: modals/screens use hidden+show, aria-live for bubbles/toast, but no router/focus trap.
+- Image dependency: IMG-20261008-WA6370.jpg must stay next to AuthUI.ts (import.meta.url).
+
+--------------------------------------------------------------------------------
+12. HOW TO CONTINUE WORK (FOR FUTURE AGENT)
+--------------------------------------------------------------------------------
+- Always read this file first. Then check package.json scripts before running anything.
+- To change auth logic: edit AuthDB.ts, keep normalize + strip-secrets + persist pattern.
+- To change UI/flows: edit AuthUI.ts render() + bindEvents() + handlers; mirror CSS in main.css
+  using body[data-screen="..."] hooks and .view#v-* ids.
+- To change dashboard: edit admin-panel/admin.ts + admin.css.
+- To add a screen: extend ScreenId in index.ts, add <section id="v-..."> in render(),
+  update showScreen allowlist + click handler allowlist, add CSS.
+- After edits: run `npm run build` (tsc --noEmit + vite build) to verify. Use `npm run dev`
+  for manual browser test at / and /admin-panel/.
+- Do NOT store passwords/secrets in LoginDetails/SignupDetails; keep admin password-free.
+- Keep validation regexes consistent across AuthDB + AuthUI.
+- If bumping storage schema, update SCHEMA_VERSION + STORAGE keys + migration in AuthDB constructor.
+
+================================================================================
+END OF INFO FILE — If behavior differs from this doc, trust the source code and update this file.
+================================================================================

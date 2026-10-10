@@ -1,0 +1,11 @@
+[
+  {
+    "comment": "PWABuilder TWA verification. Replace PASTE_* after PWABuilder shows your package + SHA-256, then redeploy.",
+    "relation": ["delegate_permission/common.handle_all_urls"],
+    "target": {
+      "namespace": "android_app",
+      "package_name": "PASTE_PACKAGE_NAME",
+      "sha256_cert_fingerprints": ["PASTE_SHA256_HERE"]
+    }
+  }
+]
