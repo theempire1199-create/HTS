@@ -36,6 +36,41 @@ export function normalizeContact(value: string): string {
   return value.trim().replace(/[\s\-().]/g, '')
 }
 
+/** Lowercase + trim normalization for emails and generic identifiers. */
+export function normalize(value: string): string {
+  return value.trim().toLowerCase()
+}
+
+/** Digits-only core used to compare phone numbers across +91 / 0 / formatting variants. */
+function contactCoreDigits(value: string): string {
+  const digits = normalizeContact(value).replace(/\D/g, '')
+  const withoutLeadingZeros = digits.replace(/^0+/, '')
+  if (withoutLeadingZeros.length === 12 && withoutLeadingZeros.startsWith('91')) {
+    return withoutLeadingZeros.slice(2)
+  }
+  return withoutLeadingZeros
+}
+
+/**
+ * Robust identifier equality for emails and phone numbers.
+ * - Emails: case-insensitive exact match.
+ * - Contacts: tolerates spaces, dashes, brackets, leading +91 / 91 / 0.
+ */
+export function identifiersEqual(a: string, b: string): boolean {
+  const na = normalize(a)
+  const nb = normalize(b)
+  if (na === nb) return true
+  // Emails must match exactly (case-insensitive); never fuzzy-match them as phone numbers.
+  if (na.includes('@') || nb.includes('@')) return false
+  const ca = normalizeContact(a).toLowerCase()
+  const cb = normalizeContact(b).toLowerCase()
+  if (ca === cb) return true
+  const coreA = contactCoreDigits(a)
+  const coreB = contactCoreDigits(b)
+  if (!coreA || !coreB) return false
+  return coreA.length >= 7 && coreA === coreB
+}
+
 /** Strict email format check: single @, valid local/domain, TLD >= 2 letters. */
 export function isValidEmail(email: string): boolean {
   const value = email.trim()

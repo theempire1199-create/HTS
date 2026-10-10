@@ -1,19 +1,23 @@
 import { authDB } from './AuthDB'
 import type { OTPPurpose, ScreenId, SignupDetails, ToastOptions } from './index'
-import { isValidContact, isValidEmail, isValidIdentifier } from './index'
+import { identifiersEqual, isValidContact, isValidEmail, isValidIdentifier } from './index'
 import { rafThrottle, startTimedLoop } from './PerformanceLayer'
 import { recordLoginDetail } from './LoginDetails'
 import { recordSignupDetail } from './SignupDetails'
 import { currentPermission, enableNotifications, notifySupported, prefEnabled, pushLocal, setPref } from './Notify'
+import {
+  ACCESS_PASSCODE,
+  FP_CRED_KEY,
+  FP_MAX_ATTEMPTS,
+  SECURING_DATA_LABEL,
+  STORAGE_UNAVAILABLE_MESSAGE,
+} from './utils/constants'
 
 const BELL_ON_ICON = '<svg class="bell-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M6 8a6 6 0 0 1 12 0c0 7 3 9 3 9H3s3-2 3-9"/><path d="M10.3 21a1.94 1.94 0 0 0 3.4 0"/></svg>'
 const BELL_OFF_ICON = '<svg class="bell-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M8.7 3A6 6 0 0 1 18 8c0 4 1.4 6.3 2.3 7.5"/><path d="M6.3 6.3C6.1 6.9 6 7.4 6 8c0 7-3 9-3 9h14"/><path d="M10.3 21a1.94 1.94 0 0 0 3.4 0"/><line x1="2" y1="2" x2="22" y2="22"/></svg>'
 
 const EYE_OFF_ICON = '<svg class="eye-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M9.88 9.88a3 3 0 1 0 4.24 4.24"/><path d="M10.73 5.08A10.43 10.43 0 0 1 12 5c7 0 11 8 11 8a18.5 18.5 0 0 1-2.16 3.19 15.6 15.6 0 0 1-2.66 2.58"/><path d="M6.61 6.61A13.5 13.5 0 0 0 1 12s3 8 11 8a9.74 9.74 0 0 0 5.39-1.61"/><line x1="2" y1="2" x2="22" y2="22"/></svg>'
 const EYE_ON_ICON = '<svg class="eye-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M2 12s3-7 10-7 10 7 10 7-3 7-10 7-10-7-10-7Z"/><circle cx="12" cy="12" r="3"/></svg>'
-const ACCESS_PASSCODE = '119911'
-const FP_CRED_KEY = 'hts_fp_cred_v1'
-const FP_MAX_ATTEMPTS = 3
 
 function bufferToBase64url(buffer: ArrayBuffer): string {
   const bytes = new Uint8Array(buffer)
@@ -53,6 +57,15 @@ export class AuthUI {
   private signupPrefillIdentifier = ''
   private signupFocusTimer: number | undefined
   private splashTimer: number | undefined
+  private passcodeFocusTimer: number | undefined
+  private passcodeResetTimer: number | undefined
+  private loginFlashTimer: number | undefined
+  private botFlashTimer: number | undefined
+  private botFallTimer: number | undefined
+  private botFallResetTimer: number | undefined
+  private botIdleRevertTimer: number | undefined
+  private testNotificationTimers: number[] = []
+  private storageUnavailableListener: (() => void) | undefined
   private isFpBusy = false
   private fpAttempts = 0
   private initialized = false
@@ -159,12 +172,12 @@ export class AuthUI {
                   </fieldset>
                   <fieldset class="signup-step" data-signup-step="3" aria-hidden="true">
                     <div class="signup-step-title" role="heading" aria-level="2">Choose your secret</div>
-                    <div class="input-wrap signup-secret-wrap"><input id="su-password" name="password" type="password" autocomplete="new-password" placeholder="At least 6 characters" minlength="6" required><button type="button" class="eye signup-eye" aria-label="Show secret" data-action="toggle-password" data-target="su-password">${EYE_OFF_ICON}</button></div>
+                    <div class="input-wrap signup-secret-wrap"><input id="su-password" name="password" type="password" autocomplete="new-password" placeholder="At least 6 characters" minlength="6" required><button type="button" class="eye signup-eye" aria-label="Show password" data-action="toggle-password" data-target="su-password">${EYE_OFF_ICON}</button></div>
                     <div class="signup-step-actions"><button class="signup-prev" type="button" data-action="signup-prev" aria-label="Previous step">←</button><button class="signup-next" type="button" data-action="signup-next" aria-label="Next step">→</button></div>
                   </fieldset>
                   <fieldset class="signup-step" data-signup-step="4" aria-hidden="true">
                     <div class="signup-step-title" role="heading" aria-level="2">Confirm your secret</div>
-                    <div class="input-wrap signup-secret-wrap"><input id="su-confirm-password" name="confirmPassword" type="password" autocomplete="new-password" placeholder="Repeat your secret" minlength="6" required><button type="button" class="eye signup-eye" aria-label="Show secret" data-action="toggle-password" data-target="su-confirm-password">${EYE_OFF_ICON}</button></div>
+                    <div class="input-wrap signup-secret-wrap"><input id="su-confirm-password" name="confirmPassword" type="password" autocomplete="new-password" placeholder="Repeat your secret" minlength="6" required><button type="button" class="eye signup-eye" aria-label="Show password" data-action="toggle-password" data-target="su-confirm-password">${EYE_OFF_ICON}</button></div>
                     <div class="signup-step-actions"><button class="signup-prev" type="button" data-action="signup-prev" aria-label="Previous step">←</button><button class="signup-next" type="button" data-action="signup-next" aria-label="Next step">→</button></div>
                   </fieldset>
                   <fieldset class="signup-step signup-terms-step" data-signup-step="5" aria-hidden="true">
@@ -238,6 +251,36 @@ export class AuthUI {
     }).join('')
   }
 
+  /**
+   * Shared input wiring: mirror rendering, pencil state, plain-text paste,
+   * bot mood sync, and focus/blur feedback. Applied to login + signup fields.
+   */
+  private attachInputEffects(
+    input: HTMLInputElement | null,
+    mirror: HTMLElement | null,
+    isPassword = false,
+  ): void {
+    if (!input) return
+    input.addEventListener('input', () => {
+      if (mirror) this.paintMirror(input, mirror, isPassword)
+      this.updatePencil(input)
+      const loginId = this.container.querySelector<HTMLInputElement>('#li-id')
+      const loginPw = this.container.querySelector<HTMLInputElement>('#li-pw')
+      if (loginId && loginPw && (input === loginId || input === loginPw)) {
+        this.updateBotFromInput(loginId, loginPw)
+      }
+    })
+    input.addEventListener('paste', (event) => this.handlePlainPaste(event, input))
+    input.addEventListener('focus', () => this.setBotMood('listening'))
+    input.addEventListener('blur', () => {
+      const loginId = this.container.querySelector<HTMLInputElement>('#li-id')
+      const loginPw = this.container.querySelector<HTMLInputElement>('#li-pw')
+      if (loginId && loginPw && (input === loginId || input === loginPw)) {
+        this.updateBotFromInput(loginId, loginPw)
+      }
+    })
+  }
+
   private bindEvents(): void {
     const bot = this.container.querySelector<HTMLElement>('.brand-emblem')
     bot?.addEventListener('pointerdown', () => this.triggerBotFall())
@@ -256,13 +299,20 @@ export class AuthUI {
       if (bot.dataset.mood === 'curious') bot.dataset.mood = 'idle'
     })
 
+    // Surface a friendly toast whenever any localStorage write fails.
+    const storageWarning = (): void => {
+      this.showToast({ message: STORAGE_UNAVAILABLE_MESSAGE, type: 'warning' })
+    }
+    window.addEventListener('hts:storage-unavailable', storageWarning)
+    this.storageUnavailableListener = storageWarning
+
     const loginCard = this.container.querySelector<HTMLElement>('#card1')
     let borderTimer: number | undefined
     loginCard?.addEventListener('pointerdown', () => {
       loginCard.classList.remove('card-awake')
       void loginCard.offsetWidth
       loginCard.classList.add('card-awake')
-      if (borderTimer) clearTimeout(borderTimer)
+      if (borderTimer !== undefined) clearTimeout(borderTimer)
       borderTimer = window.setTimeout(() => loginCard.classList.remove('card-awake'), 1100)
     })
 
@@ -323,22 +373,18 @@ export class AuthUI {
       passcodeInput?.focus({ preventScroll: true })
     })
 
-    const loginIdentifier = this.container.querySelector<HTMLInputElement>('#li-id')!
-    const loginPassword = this.container.querySelector<HTMLInputElement>('#li-pw')!
-    const identifierMirror = this.container.querySelector<HTMLElement>('#mirror-li-id')!
-    const passwordMirror = this.container.querySelector<HTMLElement>('#mirror-li-pw')!
-    loginIdentifier.addEventListener('input', () => this.paintMirror(loginIdentifier, identifierMirror, false))
-    loginPassword.addEventListener('input', () => this.paintMirror(loginPassword, passwordMirror, true))
-    loginIdentifier.addEventListener('paste', (event) => this.handlePlainPaste(event, loginIdentifier))
-    loginPassword.addEventListener('paste', (event) => this.handlePlainPaste(event, loginPassword))
-    loginIdentifier.addEventListener('input', () => this.updatePencil(loginIdentifier))
-    loginPassword.addEventListener('input', () => this.updatePencil(loginPassword))
-    loginIdentifier.addEventListener('input', () => this.updateBotFromInput(loginIdentifier, loginPassword))
-    loginPassword.addEventListener('input', () => this.updateBotFromInput(loginIdentifier, loginPassword))
-    loginIdentifier.addEventListener('focus', () => this.setBotMood('listening'))
-    loginPassword.addEventListener('focus', () => this.setBotMood('listening'))
-    loginIdentifier.addEventListener('blur', () => this.updateBotFromInput(loginIdentifier, loginPassword))
-    loginPassword.addEventListener('blur', () => this.updateBotFromInput(loginIdentifier, loginPassword))
+    const loginIdentifier = this.container.querySelector<HTMLInputElement>('#li-id')
+    const loginPassword = this.container.querySelector<HTMLInputElement>('#li-pw')
+    const identifierMirror = this.container.querySelector<HTMLElement>('#mirror-li-id')
+    const passwordMirror = this.container.querySelector<HTMLElement>('#mirror-li-pw')
+    this.attachInputEffects(loginIdentifier, identifierMirror, false)
+    this.attachInputEffects(loginPassword, passwordMirror, true)
+    // Signup fields share the same focus/pencil/paste behaviour (no mirror element).
+    this.attachInputEffects(this.container.querySelector<HTMLInputElement>('#su-name'), null, false)
+    this.attachInputEffects(this.container.querySelector<HTMLInputElement>('#su-contact'), null, false)
+    this.attachInputEffects(this.container.querySelector<HTMLInputElement>('#su-email'), null, false)
+    this.attachInputEffects(this.container.querySelector<HTMLInputElement>('#su-password'), null, true)
+    this.attachInputEffects(this.container.querySelector<HTMLInputElement>('#su-confirm-password'), null, true)
 
     const tiltCards = [
       this.container.querySelector<HTMLElement>('#card2'),
@@ -380,6 +426,7 @@ export class AuthUI {
 
   private showScreen(screen: ScreenId): void {
     if (!document.getElementById(screen)) return
+    this.clearTimers()
     this.refreshBell()
     const passcode = this.container.querySelector<HTMLElement>('#passcode-overlay')
     if (passcode) {
@@ -457,10 +504,13 @@ export class AuthUI {
       ['HASAN TECH STUDIO', 'Test 2 — logins, code gate aur updates ki khabar yahin milegi.', 'hts-test-2'],
       ['HASAN TECH STUDIO', 'Test 3 — is notification par tap karo, app khulni chahiye.', 'hts-test-3'],
     ]
+    this.testNotificationTimers.forEach((timer) => clearTimeout(timer))
+    this.testNotificationTimers = []
     tests.forEach(([title, body, tag], index) => {
-      window.setTimeout(() => {
+      const timer = window.setTimeout(() => {
         void pushLocal(title, body, tag)
       }, index * 2000)
+      this.testNotificationTimers.push(timer)
     })
   }
 
@@ -506,8 +556,91 @@ export class AuthUI {
   }
 
   private clearSplashTimer(): void {
-    if (this.splashTimer) clearTimeout(this.splashTimer)
+    if (this.splashTimer !== undefined) clearTimeout(this.splashTimer)
     this.splashTimer = undefined
+  }
+
+  /** Clear every pending UI timer before a screen transition or unmount. */
+  private clearTimers(): void {
+    if (this.botBubbleTimer !== undefined) clearTimeout(this.botBubbleTimer)
+    this.botBubbleTimer = undefined
+    if (this.botBubbleSequenceTimer !== undefined) clearTimeout(this.botBubbleSequenceTimer)
+    this.botBubbleSequenceTimer = undefined
+    if (this.avatarRevealTimer !== undefined) clearTimeout(this.avatarRevealTimer)
+    this.avatarRevealTimer = undefined
+    if (this.avatarHideTimer !== undefined) clearTimeout(this.avatarHideTimer)
+    this.avatarHideTimer = undefined
+    if (this.avatarCloseTimer !== undefined) clearTimeout(this.avatarCloseTimer)
+    this.avatarCloseTimer = undefined
+    if (this.signupFocusTimer !== undefined) clearTimeout(this.signupFocusTimer)
+    this.signupFocusTimer = undefined
+    if (this.splashTimer !== undefined) clearTimeout(this.splashTimer)
+    this.splashTimer = undefined
+    if (this.passcodeFocusTimer !== undefined) clearTimeout(this.passcodeFocusTimer)
+    this.passcodeFocusTimer = undefined
+    if (this.passcodeResetTimer !== undefined) clearTimeout(this.passcodeResetTimer)
+    this.passcodeResetTimer = undefined
+    if (this.loginFlashTimer !== undefined) clearTimeout(this.loginFlashTimer)
+    this.loginFlashTimer = undefined
+    if (this.botFlashTimer !== undefined) clearTimeout(this.botFlashTimer)
+    this.botFlashTimer = undefined
+    if (this.botFallTimer !== undefined) clearTimeout(this.botFallTimer)
+    this.botFallTimer = undefined
+    if (this.botFallResetTimer !== undefined) clearTimeout(this.botFallResetTimer)
+    this.botFallResetTimer = undefined
+    if (this.botIdleRevertTimer !== undefined) clearTimeout(this.botIdleRevertTimer)
+    this.botIdleRevertTimer = undefined
+    if (this.testNotificationTimers.length > 0) {
+      this.testNotificationTimers.forEach((timer) => clearTimeout(timer))
+      this.testNotificationTimers = []
+    }
+  }
+
+  /** Tear down timers, animations, and global listeners when the UI is unmounted. */
+  destroy(): void {
+    this.clearTimers()
+    if (this.toastTimeout !== undefined) {
+      clearTimeout(this.toastTimeout)
+      this.toastTimeout = undefined
+    }
+    this.stopBotIdleAnimation?.()
+    this.stopBotIdleAnimation = undefined
+    document.removeEventListener('keydown', this.handleEscape)
+    if (this.storageUnavailableListener) {
+      window.removeEventListener('hts:storage-unavailable', this.storageUnavailableListener)
+      this.storageUnavailableListener = undefined
+    }
+  }
+
+  /** Persist the fingerprint store with a friendly warning when storage is blocked. */
+  private persistFpStore(store: Record<string, string>): void {
+    try {
+      localStorage.setItem(FP_CRED_KEY, JSON.stringify(store))
+    } catch {
+      this.showToast({ message: STORAGE_UNAVAILABLE_MESSAGE, type: 'warning' })
+    }
+  }
+
+  /**
+   * Disable a submit button and show PBKDF2 progress while `action` runs,
+   * then restore the original label and enabled state.
+   */
+  private async withBusyButton<T>(button: HTMLButtonElement | null, action: () => Promise<T>): Promise<T> {
+    if (!button) return action()
+    const originalHTML = button.innerHTML
+    const wasDisabled = button.disabled
+    button.disabled = true
+    button.classList.add('is-busy')
+    button.setAttribute('aria-busy', 'true')
+    button.innerHTML = `<span>${SECURING_DATA_LABEL}</span>`
+    try {
+      return await action()
+    } finally {
+      button.disabled = wasDisabled
+      button.classList.remove('is-busy')
+      button.removeAttribute('aria-busy')
+      button.innerHTML = originalHTML
+    }
   }
 
   private showPasscodePopup(): void {
@@ -524,7 +657,11 @@ export class AuthUI {
     overlay.classList.add('show')
     void this.refreshFingerprintButton().then(() => this.autoFingerprint())
     if (!this.fpCredentialIdForCurrentUser()) {
-      window.setTimeout(() => input.focus({ preventScroll: true }), 350)
+      if (this.passcodeFocusTimer !== undefined) clearTimeout(this.passcodeFocusTimer)
+      this.passcodeFocusTimer = window.setTimeout(() => {
+        this.passcodeFocusTimer = undefined
+        input.focus({ preventScroll: true })
+      }, 350)
     }
   }
 
@@ -614,6 +751,7 @@ export class AuthUI {
     try {
       localStorage.setItem(FP_CRED_KEY, JSON.stringify(store))
     } catch {
+      this.showToast({ message: STORAGE_UNAVAILABLE_MESSAGE, type: 'warning' })
       throw new Error('Storage unavailable.')
     }
   }
@@ -651,11 +789,7 @@ export class AuthUI {
           if (error instanceof DOMException && (error.name === 'NotFoundError' || error.name === 'InvalidStateError')) {
             const store = readFpStore()
             delete store[user.id]
-            try {
-              localStorage.setItem(FP_CRED_KEY, JSON.stringify(store))
-            } catch {
-              // Store cleanup is best-effort; re-registration still works.
-            }
+            this.persistFpStore(store)
             this.showToast({ message: 'Fingerprint changed — tap again to register.', type: 'warning' })
             return
           }
@@ -708,11 +842,7 @@ export class AuthUI {
       if (error instanceof DOMException && (error.name === 'NotFoundError' || error.name === 'InvalidStateError')) {
         const store = readFpStore()
         delete store[user.id]
-        try {
-          localStorage.setItem(FP_CRED_KEY, JSON.stringify(store))
-        } catch {
-          // Best-effort cleanup; manual re-register still works.
-        }
+        this.persistFpStore(store)
       } else {
         this.registerFpStrike()
       }
@@ -742,7 +872,9 @@ export class AuthUI {
       const error = this.container.querySelector<HTMLElement>('#passcode-error')
       if (error) error.hidden = false
       this.showToast({ message: '❌ Wrong code, try again', type: 'error' })
-      window.setTimeout(() => {
+      if (this.passcodeResetTimer !== undefined) clearTimeout(this.passcodeResetTimer)
+      this.passcodeResetTimer = window.setTimeout(() => {
+        this.passcodeResetTimer = undefined
         input.value = ''
         this.updatePasscodeDots('')
         input.focus({ preventScroll: true })
@@ -782,8 +914,11 @@ export class AuthUI {
     const dots = this.container.querySelector<HTMLElement>('.signup-progress-dots')
     if (dots) dots.innerHTML = Array.from({ length: 6 }, (_, index) => `<i class="${index <= this.signupStep ? 'is-on' : ''}"></i>`).join('')
     const activeInput = this.container.querySelector<HTMLInputElement>(`.signup-step[data-signup-step="${this.signupStep}"] input`)
-    if (this.signupFocusTimer) clearTimeout(this.signupFocusTimer)
-    this.signupFocusTimer = window.setTimeout(() => activeInput?.focus({ preventScroll: true }), 260)
+    if (this.signupFocusTimer !== undefined) clearTimeout(this.signupFocusTimer)
+    this.signupFocusTimer = window.setTimeout(() => {
+      this.signupFocusTimer = undefined
+      activeInput?.focus({ preventScroll: true })
+    }, 260)
   }
 
   private validateSignupStep(step: number): boolean {
@@ -840,7 +975,10 @@ export class AuthUI {
       void icon.offsetWidth
       icon.classList.add('eye-pop')
     }
-    if (input.id === 'li-pw') this.paintMirror(input, this.container.querySelector<HTMLElement>('#mirror-li-pw')!, true)
+    if (input.id === 'li-pw') {
+      const mirror = this.container.querySelector<HTMLElement>('#mirror-li-pw')
+      if (mirror) this.paintMirror(input, mirror, true)
+    }
     input.focus({ preventScroll: true })
   }
 
@@ -884,7 +1022,9 @@ export class AuthUI {
       void wrap.offsetWidth
       wrap.classList.add('input-error-fill')
     })
-    window.setTimeout(() => {
+    if (this.loginFlashTimer !== undefined) clearTimeout(this.loginFlashTimer)
+    this.loginFlashTimer = window.setTimeout(() => {
+      this.loginFlashTimer = undefined
       fields.forEach((field) => {
         field.value = ''
         field.dispatchEvent(new Event('input', { bubbles: true }))
@@ -927,23 +1067,33 @@ export class AuthUI {
   private revealAvatar(duration: number): void {
     const emblem = this.container.querySelector<HTMLElement>('.brand-emblem')
     if (!emblem) return
-    if (this.avatarRevealTimer) clearTimeout(this.avatarRevealTimer)
-    if (this.avatarHideTimer) clearTimeout(this.avatarHideTimer)
-    if (this.avatarCloseTimer) clearTimeout(this.avatarCloseTimer)
+    if (this.avatarRevealTimer !== undefined) clearTimeout(this.avatarRevealTimer)
+    if (this.avatarHideTimer !== undefined) clearTimeout(this.avatarHideTimer)
+    if (this.avatarCloseTimer !== undefined) clearTimeout(this.avatarCloseTimer)
+    this.avatarRevealTimer = undefined
+    this.avatarHideTimer = undefined
+    this.avatarCloseTimer = undefined
     emblem.classList.remove('avatar-revealed', 'eyes-closing')
     emblem.classList.add('eyes-opening')
-    this.avatarRevealTimer = window.setTimeout(() => emblem.classList.add('avatar-revealed'), 520)
-    this.avatarHideTimer = window.setTimeout(() => this.hideAvatar(), duration)
+    this.avatarRevealTimer = window.setTimeout(() => {
+      this.avatarRevealTimer = undefined
+      emblem.classList.add('avatar-revealed')
+    }, 520)
+    this.avatarHideTimer = window.setTimeout(() => {
+      this.avatarHideTimer = undefined
+      this.hideAvatar()
+    }, duration)
   }
 
   private hideAvatar(): void {
     const emblem = this.container.querySelector<HTMLElement>('.brand-emblem')
     if (!emblem) return
-    if (this.avatarRevealTimer) clearTimeout(this.avatarRevealTimer)
-    if (this.avatarHideTimer) clearTimeout(this.avatarHideTimer)
-    if (this.avatarCloseTimer) clearTimeout(this.avatarCloseTimer)
+    if (this.avatarRevealTimer !== undefined) clearTimeout(this.avatarRevealTimer)
+    if (this.avatarHideTimer !== undefined) clearTimeout(this.avatarHideTimer)
+    if (this.avatarCloseTimer !== undefined) clearTimeout(this.avatarCloseTimer)
     this.avatarRevealTimer = undefined
     this.avatarHideTimer = undefined
+    this.avatarCloseTimer = undefined
     emblem.classList.remove('avatar-revealed', 'eyes-opening')
     emblem.classList.add('eyes-closing')
     this.avatarCloseTimer = window.setTimeout(() => {
@@ -956,18 +1106,23 @@ export class AuthUI {
     const bubble = this.container.querySelector<HTMLElement>('.companion-bubble')
     const talk = this.container.querySelector<HTMLElement>('.companion-talk')
     if (!bubble) return
-    if (this.botBubbleTimer) clearTimeout(this.botBubbleTimer)
+    if (this.botBubbleTimer !== undefined) clearTimeout(this.botBubbleTimer)
+    this.botBubbleTimer = undefined
     if (reveal) this.revealAvatar(duration)
     bubble.textContent = message
     bubble.classList.remove('show')
     talk?.classList.toggle('side-left', Math.random() < 0.5)
     void bubble.offsetWidth
     bubble.classList.add('show')
-    this.botBubbleTimer = window.setTimeout(() => bubble.classList.remove('show'), duration)
+    this.botBubbleTimer = window.setTimeout(() => {
+      this.botBubbleTimer = undefined
+      bubble.classList.remove('show')
+    }, duration)
   }
 
   private showGreeting(): void {
-    if (this.botBubbleSequenceTimer) clearTimeout(this.botBubbleSequenceTimer)
+    if (this.botBubbleSequenceTimer !== undefined) clearTimeout(this.botBubbleSequenceTimer)
+    this.botBubbleSequenceTimer = undefined
     const message = authDB.getCurrentUser() ? 'welcome back' : 'welcome to hasan tech studio'
     this.showBotBubble(message, 3000)
   }
@@ -979,7 +1134,9 @@ export class AuthUI {
       if (!bot || (this.currentScreen !== 'v-login' && this.currentScreen !== 'v-start') || this.isBotAnimating) return
       if (bot.dataset.mood && !['idle', 'curious'].includes(bot.dataset.mood)) return
       this.setBotMood('curious')
-      window.setTimeout(() => {
+      if (this.botIdleRevertTimer !== undefined) clearTimeout(this.botIdleRevertTimer)
+      this.botIdleRevertTimer = window.setTimeout(() => {
+        this.botIdleRevertTimer = undefined
         if ((this.currentScreen === 'v-login' || this.currentScreen === 'v-start') && !this.isBotAnimating && bot.dataset.mood === 'curious') this.setBotMood('idle')
       }, 1200)
     }, 5200)
@@ -997,7 +1154,11 @@ export class AuthUI {
     bot.classList.remove(animationClass)
     void bot.offsetWidth
     bot.classList.add(animationClass)
-    window.setTimeout(() => bot.classList.remove(animationClass), 850)
+    if (this.botFlashTimer !== undefined) clearTimeout(this.botFlashTimer)
+    this.botFlashTimer = window.setTimeout(() => {
+      this.botFlashTimer = undefined
+      bot.classList.remove(animationClass)
+    }, 850)
   }
 
   private triggerBotFall(): void {
@@ -1006,9 +1167,15 @@ export class AuthUI {
     this.isBotAnimating = true
     this.showGreeting()
     const previousMood = emblem.dataset.mood || 'idle'
-    window.setTimeout(() => {
+    if (this.botFallTimer !== undefined) clearTimeout(this.botFallTimer)
+    if (this.botFallResetTimer !== undefined) clearTimeout(this.botFallResetTimer)
+    this.botFallTimer = window.setTimeout(() => {
+      this.botFallTimer = undefined
       emblem.dataset.mood = previousMood
-      window.setTimeout(() => { this.isBotAnimating = false }, 1000)
+      this.botFallResetTimer = window.setTimeout(() => {
+        this.botFallResetTimer = undefined
+        this.isBotAnimating = false
+      }, 1000)
     }, 900)
   }
 
@@ -1040,8 +1207,9 @@ export class AuthUI {
       this.showScreen('v-signup')
       return
     }
+    const submitButton = form.querySelector<HTMLButtonElement>('button[type="submit"]')
     try {
-      const user = await authDB.login(identifier, password)
+      const user = await this.withBusyButton(submitButton, () => authDB.login(identifier, password))
       recordLoginDetail(identifier)
       this.setBotMood('happy')
       this.flashBot('bot-success')
@@ -1075,8 +1243,9 @@ export class AuthUI {
     if (details.password !== confirmation) return this.showToast({ message: '❌ Passwords not match', type: 'error' })
     if (!this.container.querySelector<HTMLInputElement>('#su-terms')?.checked) return this.showToast({ message: '❌ Please agree to continue', type: 'error' })
 
+    const submitButton = form.querySelector<HTMLButtonElement>('button[type="submit"]')
     try {
-      await authDB.createUser(details)
+      await this.withBusyButton(submitButton, () => authDB.createUser(details))
       recordSignupDetail({ name: details.name, contact: details.contact, email: details.email })
       const loginIdentifier = this.container.querySelector<HTMLInputElement>('#li-id')
       if (loginIdentifier) {
@@ -1105,21 +1274,27 @@ export class AuthUI {
   private configureReverify(purpose: OTPPurpose, identifier: string): void {
     this.otpPurpose = purpose
     this.otpIdentifier = identifier
-    this.container.querySelector('#reverify-title')!.innerHTML = 'Re-verify 🔄<small>Verify your email / number with OTP</small>'
-    const identifierInput = this.container.querySelector<HTMLInputElement>('#rv-id')!
+    const title = this.container.querySelector<HTMLElement>('#reverify-title')
+    if (title) title.innerHTML = 'Re-verify 🔄<small>Verify your email / number with OTP</small>'
+    const identifierInput = this.container.querySelector<HTMLInputElement>('#rv-id')
+    if (!identifierInput) return
     identifierInput.value = identifier
     identifierInput.readOnly = false
-    this.container.querySelector<HTMLInputElement>('#rv-otp')!.value = ''
+    const otpInput = this.container.querySelector<HTMLInputElement>('#rv-otp')
+    if (otpInput) otpInput.value = ''
   }
 
-  private async handleReverify(_form: HTMLFormElement): Promise<void> {
-    const identifier = this.container.querySelector<HTMLInputElement>('#rv-id')!.value.trim()
-    const code = this.container.querySelector<HTMLInputElement>('#rv-otp')!.value.trim()
+  private async handleReverify(form: HTMLFormElement): Promise<void> {
+    const identifierInput = this.container.querySelector<HTMLInputElement>('#rv-id')
+    const codeInput = this.container.querySelector<HTMLInputElement>('#rv-otp')
+    if (!identifierInput || !codeInput) return
+    const identifier = identifierInput.value.trim()
+    const code = codeInput.value.trim()
     if (!identifier || !isValidIdentifier(identifier)) {
       this.showToast({ message: 'Enter a valid email or contact number.', type: 'error' })
       return
     }
-    if (identifier.toLowerCase() !== this.otpIdentifier.toLowerCase()) {
+    if (!identifiersEqual(identifier, this.otpIdentifier)) {
       this.showToast({ message: 'Send a verification code for this email or number first.', type: 'warning' })
       return
     }
@@ -1127,8 +1302,34 @@ export class AuthUI {
       this.showToast({ message: 'That code is incorrect or expired. Request a new one and try again.', type: 'error' })
       return
     }
+    const submitButton = form.querySelector<HTMLButtonElement>('button[type="submit"]')
+    if (submitButton) {
+      submitButton.disabled = true
+      try {
+        this.showToast({ message: '✅ Re-verified successfully!', type: 'success' })
+        this.showScreen('v-login')
+      } finally {
+        submitButton.disabled = false
+      }
+      return
+    }
     this.showToast({ message: '✅ Re-verified successfully!', type: 'success' })
     this.showScreen('v-login')
+  }
+
+  /** Password-reset path shares the same PBKDF2 busy feedback as login/signup. */
+  async resetPasswordWithFeedback(
+    identifier: string,
+    password: string,
+    button: HTMLButtonElement | null,
+  ): Promise<void> {
+    try {
+      await this.withBusyButton(button, () => authDB.resetPassword(identifier, password))
+      this.showToast({ message: '✅ Secret updated. Please login.', type: 'success' })
+      this.showScreen('v-login')
+    } catch (error) {
+      this.showToast({ message: this.errorMessage(error), type: 'error' })
+    }
   }
 
   private sendOTP(): void {
@@ -1143,7 +1344,8 @@ export class AuthUI {
     }
     this.otpIdentifier = identifier
     this.issueOTP()
-    this.container.querySelector<HTMLInputElement>('#rv-otp')!.value = ''
+    const otpInput = this.container.querySelector<HTMLInputElement>('#rv-otp')
+    if (otpInput) otpInput.value = ''
   }
 
   private errorMessage(error: unknown): string {
@@ -1155,7 +1357,11 @@ export class AuthUI {
     if (!toast) return
     toast.textContent = options.message
     toast.className = `show ${options.type || 'info'}`
-    if (this.toastTimeout) clearTimeout(this.toastTimeout)
-    this.toastTimeout = window.setTimeout(() => toast.classList.remove('show'), options.duration || 3000)
+    if (this.toastTimeout !== undefined) clearTimeout(this.toastTimeout)
+    this.toastTimeout = undefined
+    this.toastTimeout = window.setTimeout(() => {
+      this.toastTimeout = undefined
+      toast.classList.remove('show')
+    }, options.duration || 3000)
   }
 }

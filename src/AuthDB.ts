@@ -1,20 +1,27 @@
 import type { AuthDBData, SignupDetails, User } from './index'
-import { isValidContact, isValidEmail, normalizeContact } from './index'
+import { isValidContact, isValidEmail, normalize, normalizeContact } from './index'
+import { reportStorageUnavailable } from './Notify'
+import {
+  AUTH_DB_KEY,
+  AUTH_SCHEMA_KEY,
+  AUTH_SCHEMA_VERSION,
+  CURRENT_USER_KEY,
+  LEGACY_AUTH_DB_KEY,
+  LEGACY_CURRENT_USER_KEY,
+  LOGIN_DETAILS_KEY,
+  SIGNUP_DETAILS_KEY,
+} from './utils/constants'
 
-const STORAGE_KEY = 'hts_auth_db_v4'
-const CURRENT_USER_KEY = 'hts_current_user_v4'
-const SCHEMA_KEY = 'hts_auth_schema'
-const SCHEMA_VERSION = '4'
-const LEGACY_STORAGE_KEY = 'hts_auth_db_v3'
-const LEGACY_CURRENT_USER_KEY = 'hts_current_user_v3'
+const STORAGE_KEY = AUTH_DB_KEY
+const CURRENT_USER_STORAGE_KEY = CURRENT_USER_KEY
+const SCHEMA_KEY = AUTH_SCHEMA_KEY
+const SCHEMA_VERSION = AUTH_SCHEMA_VERSION
+const LEGACY_STORAGE_KEY = LEGACY_AUTH_DB_KEY
+const LEGACY_CURRENT_USER_STORAGE_KEY = LEGACY_CURRENT_USER_KEY
 const OTP_TTL = 5 * 60 * 1000
 const PBKDF2_ITERATIONS = 210_000
 
 type PendingOTP = { code: string; expiresAt: number; purpose: 'recovery' }
-
-function normalize(value: string): string {
-  return value.trim().toLowerCase()
-}
 
 function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === 'object' && value !== null
@@ -39,12 +46,12 @@ export class AuthDB {
 
   private constructor() {
     AuthDB.safeRemove(LEGACY_STORAGE_KEY)
-    AuthDB.safeRemove(LEGACY_CURRENT_USER_KEY)
+    AuthDB.safeRemove(LEGACY_CURRENT_USER_STORAGE_KEY)
     if (AuthDB.safeGet(SCHEMA_KEY) !== SCHEMA_VERSION) {
       AuthDB.safeRemove(STORAGE_KEY)
-      AuthDB.safeRemove(CURRENT_USER_KEY)
-      AuthDB.safeRemove('hts_login_details_v1')
-      AuthDB.safeRemove('hts_signup_details_v1')
+      AuthDB.safeRemove(CURRENT_USER_STORAGE_KEY)
+      AuthDB.safeRemove(LOGIN_DETAILS_KEY)
+      AuthDB.safeRemove(SIGNUP_DETAILS_KEY)
       AuthDB.safeSet(SCHEMA_KEY, SCHEMA_VERSION)
     }
     this.data = this.loadFromStorage()
@@ -67,7 +74,8 @@ export class AuthDB {
     try {
       localStorage.setItem(key, value)
     } catch {
-      // Storage may be unavailable in a private or restricted browsing context.
+      // Quota exceeded or private mode: surface a friendly warning instead of failing silently.
+      reportStorageUnavailable()
     }
   }
 
@@ -195,8 +203,10 @@ export class AuthDB {
     this.data.logins.push({ userId: user.id, timestamp: Date.now() })
     this.data.logins = this.data.logins.slice(-100)
     this.persist()
-    AuthDB.safeSet(CURRENT_USER_KEY, user.id)
-    return this.findUser(user.id)!
+    AuthDB.safeSet(CURRENT_USER_STORAGE_KEY, user.id)
+    const current = this.findUser(user.id)
+    if (!current) throw new Error('Login succeeded but session could not be restored.')
+    return current
   }
 
   async resetPassword(identifier: string, password: string): Promise<void> {
@@ -210,12 +220,12 @@ export class AuthDB {
   }
 
   getCurrentUser(): Omit<User, 'passwordSalt' | 'passwordHash'> | null {
-    const id = AuthDB.safeGet(CURRENT_USER_KEY)
+    const id = AuthDB.safeGet(CURRENT_USER_STORAGE_KEY)
     return id ? this.findUser(id) : null
   }
 
   logout(): void {
-    AuthDB.safeRemove(CURRENT_USER_KEY)
+    AuthDB.safeRemove(CURRENT_USER_STORAGE_KEY)
   }
 
   clearAll(): void {
