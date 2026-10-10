@@ -3,9 +3,40 @@ import { AuthUI } from './AuthUI'
 import { pushLocal } from './Notify'
 
 const app = document.querySelector<HTMLElement>('#app')
-if (!app) throw new Error('App root #app was not found.')
 
-new AuthUI(app).init()
+function escapeHtml(value: string): string {
+  return value.replace(/[<>&]/g, (char) => (char === '<' ? '&lt;' : char === '>' ? '&gt;' : '&amp;'))
+}
+
+/** Show a readable message instead of a blank white screen when startup fails. */
+function showFatal(error: unknown): void {
+  const message = error instanceof Error ? error.message : String(error)
+  console.error('[HTS] startup failed:', error)
+  if (!app) return
+  app.innerHTML = `<div style="max-width:560px;margin:12vh auto;padding:24px;font-family:system-ui,sans-serif;color:#2c2340">
+    <h1 style="font-size:20px;color:#7c3aed;margin:0 0 10px">HASAN TECH STUDIO</h1>
+    <p style="font-weight:700;margin:0 0 8px">App failed to start.</p>
+    <pre style="white-space:pre-wrap;word-break:break-word;background:#f5efff;padding:12px;border-radius:10px;font-size:13px">${escapeHtml(message)}</pre>
+    <p style="font-size:13px;color:#755aa3">Run the app with <code>npm install</code> then <code>npm run dev</code>, and open the printed Local URL (e.g. http://localhost:5173).</p>
+  </div>`
+}
+
+if (!app) {
+  console.error('[HTS] #app root was not found.')
+} else {
+  try {
+    new AuthUI(app).init()
+  } catch (error) {
+    showFatal(error)
+  }
+  // Surface a blank-screen-causing async error too, but never clobber a rendered app.
+  window.addEventListener('error', (event) => {
+    if (!app.childElementCount) showFatal(event.error ?? event.message)
+  })
+  window.addEventListener('unhandledrejection', (event) => {
+    if (!app.childElementCount) showFatal(event.reason)
+  })
+}
 
 if (import.meta.env.PROD && 'serviceWorker' in navigator) {
   window.addEventListener('load', () => {
