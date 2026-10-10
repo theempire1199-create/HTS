@@ -2,11 +2,10 @@ import { authDB } from './AuthDB'
 import type { OTPPurpose, ScreenId, SignupDetails, ToastOptions } from './index'
 import { identifiersEqual, isValidContact, isValidEmail, isValidIdentifier } from './index'
 import { rafThrottle, startTimedLoop } from './PerformanceLayer'
-import { recordLoginDetail } from './LoginDetails'
+import { getLoginDetails, recordLoginDetail } from './LoginDetails'
 import { recordSignupDetail } from './SignupDetails'
 import { currentPermission, enableNotifications, notifySupported, onStorageUnavailable, prefEnabled, pushLocal, setPref } from './Notify'
 import {
-  ACCESS_PASSCODE,
   FP_CRED_KEY,
   FP_MAX_ATTEMPTS,
   SECURING_DATA_LABEL,
@@ -34,6 +33,19 @@ function readFpStore(): Record<string, string> {
     // Corrupt store reads as empty; re-registration fixes it.
   }
   return {}
+}
+
+/** Escape user-supplied text before it is placed into innerHTML. */
+function escapeHtml(value: string): string {
+  return value.replace(/[&<>"']/g, (char) => {
+    switch (char) {
+      case '&': return '&amp;'
+      case '<': return '&lt;'
+      case '>': return '&gt;'
+      case '"': return '&quot;'
+      default: return '&#39;'
+    }
+  })
 }
 
 export class AuthUI {
@@ -65,6 +77,8 @@ export class AuthUI {
   private touchTilts: Array<{ card: HTMLElement; handler: (event: TouchEvent) => void; cancel: () => void }> = []
   private containerClickHandler: ((event: Event) => void) | undefined
   private containerSubmitHandler: ((event: Event) => void) | undefined
+  private passcodeMode: 'verify' | 'set' | 'confirm' = 'verify'
+  private pendingPasscode = ''
   private isFpBusy = false
   private fpAttempts = 0
   private initialized = false
@@ -342,6 +356,7 @@ export class AuthUI {
       if (action === 'signup-next') this.advanceSignupStep()
       if (action === 'signup-prev') this.retreatSignupStep()
       if (action === 'logout') this.logout()
+      if (action === 'set-passcode') this.openPasscodeSetup()
       if (action === 'terms-link' || action === 'privacy-link') event.preventDefault()
     }
     this.container.addEventListener('click', this.containerClickHandler)
@@ -367,7 +382,7 @@ export class AuthUI {
     const passcodeInput = this.container.querySelector<HTMLInputElement>('#passcode-input')
     passcodeInput?.addEventListener('input', () => this.handlePasscodeInput())
     passcodeInput?.addEventListener('keydown', (event) => {
-      if (event.key === 'Enter') this.verifyPasscode()
+      if (event.key === 'Enter') void this.submitPasscode()
     })
     this.container.querySelector<HTMLElement>('.passcode-card')?.addEventListener('click', () => {
       passcodeInput?.focus({ preventScroll: true })
@@ -440,6 +455,7 @@ export class AuthUI {
     }
     this.currentScreen = screen
     if (screen === 'v-signup') this.resetSignupWizard(this.signupPrefillIdentifier)
+    if (screen === 'v-work-progress') this.renderDashboard()
     this.container.querySelectorAll<HTMLElement>('.view').forEach(view => {
       const active = view.id === screen
       view.classList.toggle('show', active)
@@ -547,8 +563,11 @@ export class AuthUI {
     this.splashTimer = window.setTimeout(() => {
       this.splashTimer = undefined
       if (this.currentScreen !== 'v-start') return
-      if (authDB.getCurrentUser()) {
+      const user = authDB.getCurrentUser()
+      if (user && authDB.hasPasscode(user.id)) {
         this.showPasscodePopup()
+      } else if (user) {
+        this.restoreRememberedSession()
       } else {
         this.showScreen('v-login')
       }
@@ -659,11 +678,48 @@ export class AuthUI {
     }
   }
 
+  private setPasscodeCopy(title: string, sub: string, showAlt: boolean): void {
+    const titleEl = this.container.querySelector<HTMLElement>('#passcode-title')
+    if (titleEl) titleEl.textContent = title
+    const subEl = this.container.querySelector<HTMLElement>('.passcode-sub')
+    if (subEl) subEl.textContent = sub
+    const alt = this.container.querySelector<HTMLElement>('.passcode-alt')
+    if (alt) alt.hidden = !showAlt
+    const fp = this.container.querySelector<HTMLElement>('#fp-button')
+    if (fp) fp.hidden = !showAlt
+  }
+
+  /** Open the app-lock code in "set a new code" mode (from the dashboard). */
+  private openPasscodeSetup(): void {
+    const user = authDB.getCurrentUser()
+    const overlay = this.container.querySelector<HTMLElement>('#passcode-overlay')
+    const input = this.container.querySelector<HTMLInputElement>('#passcode-input')
+    const error = this.container.querySelector<HTMLElement>('#passcode-error')
+    if (!user || !overlay || !input) return
+    this.passcodeMode = 'set'
+    this.pendingPasscode = ''
+    this.setPasscodeCopy('Set access code', 'Choose a 6-digit code', false)
+    if (error) error.hidden = true
+    input.value = ''
+    this.updatePasscodeDots('')
+    overlay.hidden = false
+    void overlay.offsetWidth
+    overlay.classList.add('show')
+    if (this.passcodeFocusTimer !== undefined) clearTimeout(this.passcodeFocusTimer)
+    this.passcodeFocusTimer = window.setTimeout(() => {
+      this.passcodeFocusTimer = undefined
+      input.focus({ preventScroll: true })
+    }, 200)
+  }
+
   private showPasscodePopup(): void {
     const overlay = this.container.querySelector<HTMLElement>('#passcode-overlay')
     const input = this.container.querySelector<HTMLInputElement>('#passcode-input')
     const error = this.container.querySelector<HTMLElement>('#passcode-error')
     if (!overlay || !input) return
+    this.passcodeMode = 'verify'
+    this.pendingPasscode = ''
+    this.setPasscodeCopy('Enter Code', 'Fill your 6-digit access code', true)
     if (error) error.hidden = true
     input.value = ''
     this.updatePasscodeDots('')
@@ -695,7 +751,64 @@ export class AuthUI {
     this.updatePasscodeDots(input.value)
     const error = this.container.querySelector<HTMLElement>('#passcode-error')
     if (error) error.hidden = true
-    if (input.value.length === 6) this.verifyPasscode()
+    if (input.value.length === 6) void this.submitPasscode()
+  }
+
+  private async submitPasscode(): Promise<void> {
+    const input = this.container.querySelector<HTMLInputElement>('#passcode-input')
+    if (!input) return
+    const value = input.value
+    if (this.passcodeMode === 'set') {
+      this.pendingPasscode = value
+      this.passcodeMode = 'confirm'
+      this.setPasscodeCopy('Confirm access code', 'Re-enter your 6-digit code', false)
+      input.value = ''
+      this.updatePasscodeDots('')
+      return
+    }
+    if (this.passcodeMode === 'confirm') {
+      const user = authDB.getCurrentUser()
+      if (user && value === this.pendingPasscode) {
+        try {
+          await authDB.setPasscode(user.id, value)
+          this.hidePasscodePopup()
+          this.pendingPasscode = ''
+          this.passcodeMode = 'verify'
+          this.showToast({ message: '✅ Access code saved.', type: 'success' })
+          void pushLocal('HASAN TECH STUDIO', 'Access code saved.')
+          if (this.currentScreen === 'v-work-progress') this.renderDashboard()
+        } catch (error) {
+          this.showToast({ message: this.errorMessage(error), type: 'error' })
+        }
+      } else {
+        this.passcodeError('Codes do not match. Start again.')
+        this.passcodeMode = 'set'
+        this.pendingPasscode = ''
+        this.setPasscodeCopy('Set access code', 'Choose a 6-digit code', false)
+        this.resetPasscodeInput(input)
+      }
+      return
+    }
+    await this.verifyPasscode()
+  }
+
+  private resetPasscodeInput(input: HTMLInputElement): void {
+    if (this.passcodeResetTimer !== undefined) clearTimeout(this.passcodeResetTimer)
+    this.passcodeResetTimer = window.setTimeout(() => {
+      this.passcodeResetTimer = undefined
+      input.value = ''
+      this.updatePasscodeDots('')
+      input.focus({ preventScroll: true })
+    }, 650)
+  }
+
+  private passcodeError(message: string): void {
+    const card = this.container.querySelector<HTMLElement>('.passcode-card')
+    const error = this.container.querySelector<HTMLElement>('#passcode-error')
+    if (error) { error.textContent = message; error.hidden = false }
+    card?.classList.remove('passcode-shake')
+    void card?.offsetWidth
+    card?.classList.add('passcode-shake')
   }
 
   private updatePasscodeDots(value: string): void {
@@ -869,11 +982,11 @@ export class AuthUI {
     }
   }
 
-  private verifyPasscode(): void {
+  private async verifyPasscode(): Promise<void> {
     const input = this.container.querySelector<HTMLInputElement>('#passcode-input')
-    const card = this.container.querySelector<HTMLElement>('.passcode-card')
     if (!input) return
-    if (input.value === ACCESS_PASSCODE) {
+    const user = authDB.getCurrentUser()
+    if (user && (await authDB.verifyPasscode(user.id, input.value))) {
       input.value = ''
       this.updatePasscodeDots('')
       this.hidePasscodePopup()
@@ -882,19 +995,9 @@ export class AuthUI {
       return
     }
     if (input.value.length === 6) {
-      card?.classList.remove('passcode-shake')
-      void card?.offsetWidth
-      card?.classList.add('passcode-shake')
-      const error = this.container.querySelector<HTMLElement>('#passcode-error')
-      if (error) error.hidden = false
+      this.passcodeError('Wrong code, try again')
       this.showToast({ message: '❌ Wrong code, try again', type: 'error' })
-      if (this.passcodeResetTimer !== undefined) clearTimeout(this.passcodeResetTimer)
-      this.passcodeResetTimer = window.setTimeout(() => {
-        this.passcodeResetTimer = undefined
-        input.value = ''
-        this.updatePasscodeDots('')
-        input.focus({ preventScroll: true })
-      }, 650)
+      this.resetPasscodeInput(input)
     }
   }
 
@@ -1366,6 +1469,51 @@ export class AuthUI {
 
   private errorMessage(error: unknown): string {
     return error instanceof Error ? error.message : 'Something went wrong. Please try again.'
+  }
+
+  /** Fill the post-login screen with the signed-in user's details. */
+  private renderDashboard(): void {
+    const mount = this.container.querySelector<HTMLElement>('.work-progress-screen')
+    if (!mount) return
+    const user = authDB.getCurrentUser()
+    if (!user) {
+      mount.replaceChildren()
+      return
+    }
+    const fmt = (ts: number): string => (ts ? new Date(ts).toLocaleString() : '—')
+    const hasCode = authDB.hasPasscode(user.id)
+    const recent = getLoginDetails().slice(0, 5)
+    const activity = recent.length
+      ? `<ul class="dash-activity">${recent.map(item => `<li><span>${escapeHtml(item.identifier)}</span><time>${fmt(item.loggedInAt)}</time></li>`).join('')}</ul>`
+      : '<p class="dash-muted">No recent logins recorded.</p>'
+    mount.innerHTML = `
+      <div class="dash">
+        <h1 class="dash-hello">Welcome back, ${escapeHtml(user.name || user.email)}</h1>
+        <div class="dash-grid">
+          <section class="dash-card">
+            <h2>Profile</h2>
+            <dl class="dash-list">
+              <dt>Name</dt><dd>${escapeHtml(user.name)}</dd>
+              <dt>Email</dt><dd>${escapeHtml(user.email)}</dd>
+              <dt>Contact</dt><dd>${escapeHtml(user.contact)}</dd>
+              <dt>Member since</dt><dd>${fmt(user.createdAt)}</dd>
+              <dt>Logins</dt><dd>${user.loginCount}</dd>
+              <dt>Last login</dt><dd>${fmt(user.lastLoginAt)}</dd>
+            </dl>
+          </section>
+          <section class="dash-card">
+            <h2>Security</h2>
+            <p class="dash-muted">Access code: <b>${hasCode ? 'set' : 'not set'}</b></p>
+            <button class="dash-btn" type="button" data-action="set-passcode">${hasCode ? 'Change access code' : 'Set access code'}</button>
+            <button class="dash-btn dash-btn-ghost" type="button" data-action="notify-toggle">Notifications</button>
+            <button class="dash-btn dash-btn-danger" type="button" data-action="logout">Log out</button>
+          </section>
+        </div>
+        <section class="dash-card">
+          <h2>Recent activity</h2>
+          ${activity}
+        </section>
+      </div>`
   }
 
   private showToast(options: ToastOptions): void {

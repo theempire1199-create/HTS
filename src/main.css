@@ -696,3 +696,23 @@ body[data-screen="v-start"] .notify-bell, body[data-screen="v-work-progress"] .n
 /* Main screen fully fresh: no ball, brand name, tagline, or bottom text. */
 body[data-screen="v-work-progress"] .site-header,
 body[data-screen="v-work-progress"] .site-footer { display: none; }
+
+
+/* ---- Post-login dashboard ---- */
+.dash { max-width: 960px; margin: 0 auto; padding: 24px 16px 48px; display: grid; gap: 18px; }
+.dash-hello { font-size: clamp(20px, 4vw, 28px); font-weight: 800; color: var(--purple); text-align: center; }
+.dash-grid { display: grid; gap: 16px; grid-template-columns: 1fr; }
+@media (min-width: 720px) { .dash-grid { grid-template-columns: 1fr 1fr; } }
+.dash-card { background: rgba(255,255,255,.82); border: 1.5px solid rgba(124,58,237,.22); border-radius: 20px; padding: 18px 20px; box-shadow: 0 10px 24px rgba(76,29,149,.12); }
+.dash-card h2 { font-size: 15px; font-weight: 800; color: var(--purple); margin: 0 0 12px; text-transform: uppercase; letter-spacing: .04em; }
+.dash-list { display: grid; grid-template-columns: auto 1fr; gap: 8px 14px; margin: 0; }
+.dash-list dt { color: #755aa3; font-weight: 700; font-size: 13px; }
+.dash-list dd { margin: 0; color: #2c2340; font-weight: 600; font-size: 14px; word-break: break-word; }
+.dash-muted { color: #755aa3; font-size: 13.5px; font-weight: 600; }
+.dash-btn { display: block; width: 100%; margin-top: 10px; padding: 12px 16px; border: 0; border-radius: 14px; background: linear-gradient(135deg, var(--purple), var(--accent)); color: #fff; font-size: 14px; font-weight: 700; cursor: pointer; }
+.dash-btn:hover { filter: brightness(1.06); }
+.dash-btn-ghost { background: rgba(124,58,237,.1); color: var(--purple); }
+.dash-btn-danger { background: rgba(220,38,38,.1); color: #b91c1c; }
+.dash-activity { list-style: none; margin: 0; padding: 0; display: grid; gap: 8px; }
+.dash-activity li { display: flex; justify-content: space-between; gap: 12px; padding: 8px 12px; border-radius: 12px; background: rgba(124,58,237,.06); font-size: 13px; }
+.dash-activity time { color: #755aa3; }

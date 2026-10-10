@@ -20,7 +20,6 @@ export const LEGACY_KEYS_TO_CLEAN: readonly string[] = [
 export const NOTIFY_PREF_KEY = 'hts_notify_v1'
 export const FP_CRED_KEY = 'hts_fp_cred_v1'
 
-export const ACCESS_PASSCODE = '119911'
 export const FP_MAX_ATTEMPTS = 3
 
 export const STORAGE_UNAVAILABLE_MESSAGE =

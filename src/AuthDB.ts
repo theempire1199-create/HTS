@@ -139,6 +139,33 @@ export class AuthDB {
     return difference === 0
   }
 
+  hasPasscode(userId: string): boolean {
+    const user = this.data.users[normalize(userId)]
+    return Boolean(user?.passcodeHash && user?.passcodeSalt)
+  }
+
+  /** Set or replace the per-user app-lock code. Stored PBKDF2-hashed, never in plaintext. */
+  async setPasscode(userId: string, code: string): Promise<void> {
+    if (!/^\d{6}$/.test(code)) throw new Error('Access code must be exactly 6 digits.')
+    const user = this.data.users[normalize(userId)]
+    if (!user) throw new Error('No signed-in account to protect.')
+    const salt = crypto.getRandomValues(new Uint8Array(16))
+    user.passcodeSalt = encode(salt)
+    user.passcodeHash = encode(await this.hashPassword(code, salt))
+    this.persist()
+  }
+
+  async verifyPasscode(userId: string, code: string): Promise<boolean> {
+    const user = this.data.users[normalize(userId)]
+    if (!user?.passcodeHash || !user?.passcodeSalt) return false
+    const actual = await this.hashPassword(code, decode(user.passcodeSalt))
+    const expected = decode(user.passcodeHash)
+    if (actual.length !== expected.length) return false
+    let difference = 0
+    for (let i = 0; i < actual.length; i++) difference |= actual[i] ^ expected[i]
+    return difference === 0
+  }
+
   startOTP(identifier: string, purpose: PendingOTP['purpose']): string {
     const key = normalize(identifier)
     const bytes = crypto.getRandomValues(new Uint32Array(1))

@@ -8,6 +8,9 @@ export interface User {
   createdAt: number
   lastLoginAt: number
   loginCount: number
+  /** Optional per-user app-lock code (PBKDF2-hashed). Set by the user, never hardcoded. */
+  passcodeSalt?: string
+  passcodeHash?: string
 }
 
 export interface LoginRecord {

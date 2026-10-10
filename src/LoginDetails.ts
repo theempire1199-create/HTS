@@ -36,3 +36,8 @@ export function recordLoginDetail(identifier: string): void {
     // Login still succeeds when browser storage is restricted.
   }
 }
+
+/** Recent successful logins, newest first (password-free metadata only). */
+export function getLoginDetails(): LoginDetailRecord[] {
+  return readRecords()
+}
