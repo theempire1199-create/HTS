@@ -7,7 +7,7 @@ import {
   FP_MAX_ATTEMPTS,
   STORAGE_UNAVAILABLE_MESSAGE,
 } from './utils/constants'
-import { BELL_OFF_ICON, BELL_ON_ICON } from './utils/icons'
+import { BELL_OFF_ICON, BELL_ON_ICON, FP_ICON } from './utils/icons'
 
 function bufferToBase64url(buffer: ArrayBuffer): string {
   const bytes = new Uint8Array(buffer)
@@ -67,6 +67,7 @@ export class AuthUI {
   private containerClickHandler: ((event: Event) => void) | undefined
   private passcodeMode: 'verify' | 'set' | 'confirm' = 'verify'
   private pendingPasscode = ''
+  private passcodeResolving = false
   private isFpBusy = false
   private fpAttempts = 0
   private initialized = false
@@ -136,7 +137,7 @@ export class AuthUI {
           <div class="passcode-dots" id="passcode-dots" aria-hidden="true"><i></i><i></i><i></i><i></i><i></i><i></i></div>
           <div class="input-wrap passcode-wrap"><input id="passcode-input" inputmode="numeric" autocomplete="one-time-code" maxlength="6" placeholder="••••••" aria-label="6-digit access code"></div>
           <div class="passcode-error" id="passcode-error" hidden>Wrong code, try again</div>
-          <button class="passcode-fp" id="fp-button" type="button" data-action="fingerprint" hidden aria-label="Unlock with fingerprint"><span class="passcode-fp-icon" aria-hidden="true">&#9757;</span><span id="fp-label">Use fingerprint</span></button>
+          <button class="passcode-fp" id="fp-button" type="button" data-action="fingerprint" hidden aria-label="Unlock with fingerprint"><span class="passcode-fp-icon" aria-hidden="true">${FP_ICON}</span><span id="fp-label">Fingerprint</span></button>
           <button class="passcode-alt" type="button" hidden aria-hidden="true" tabindex="-1">try another way</button>
         </div>
       </div>
@@ -311,9 +312,12 @@ export class AuthUI {
     const overlay = this.container.querySelector<HTMLElement>('#passcode-overlay')
     const input = this.container.querySelector<HTMLInputElement>('#passcode-input')
     const error = this.container.querySelector<HTMLElement>('#passcode-error')
+    const card = this.container.querySelector<HTMLElement>('.passcode-card')
     if (!overlay || !input) return
     this.passcodeMode = 'set'
     this.pendingPasscode = ''
+    this.passcodeResolving = false
+    card?.classList.remove('code-ok', 'code-error', 'passcode-shake')
     this.setPasscodeCopy('Set access code', 'Choose a 6-digit code — ya 👆 se fingerprint lagao')
     if (error) error.hidden = true
     input.value = ''
@@ -334,9 +338,12 @@ export class AuthUI {
     const overlay = this.container.querySelector<HTMLElement>('#passcode-overlay')
     const input = this.container.querySelector<HTMLInputElement>('#passcode-input')
     const error = this.container.querySelector<HTMLElement>('#passcode-error')
+    const card = this.container.querySelector<HTMLElement>('.passcode-card')
     if (!overlay || !input) return
     this.passcodeMode = 'verify'
     this.pendingPasscode = ''
+    this.passcodeResolving = false
+    card?.classList.remove('code-ok', 'code-error', 'passcode-shake')
     this.setPasscodeCopy('Enter Code', 'Fill your 6-digit access code')
     if (error) error.hidden = true
     input.value = ''
@@ -382,7 +389,7 @@ export class AuthUI {
 
   private async submitPasscode(): Promise<void> {
     const input = this.container.querySelector<HTMLInputElement>('#passcode-input')
-    if (!input) return
+    if (!input || this.passcodeResolving) return
     const value = input.value
     if (value.length !== 6) return
     if (this.passcodeMode === 'set') {
@@ -400,10 +407,9 @@ export class AuthUI {
           await authDB.setPasscode(value)
           this.pendingPasscode = ''
           this.passcodeMode = 'verify'
-          this.hidePasscodePopup()
           this.showToast({ message: '✅ Access code saved.', type: 'success' })
           void pushLocal('HASAN TECH STUDIO', 'Access code saved.')
-          this.unlock()
+          await this.flashOkAndUnlock()
         } catch (error) {
           this.showToast({ message: this.errorMessage(error), type: 'error' })
         }
@@ -424,10 +430,7 @@ export class AuthUI {
     if (!input) return
     try {
       if (await authDB.verifyPasscode(input.value)) {
-        input.value = ''
-        this.updatePasscodeDots('')
-        this.hidePasscodePopup()
-        this.unlock()
+        await this.flashOkAndUnlock()
         return
       }
     } catch (error) {
@@ -454,12 +457,31 @@ export class AuthUI {
     this.showScreen('v-work-progress')
   }
 
+  /** Correct code complete — stroke flashes GREEN, then unlock. */
+  private async flashOkAndUnlock(): Promise<void> {
+    const card = this.container.querySelector<HTMLElement>('.passcode-card')
+    const input = this.container.querySelector<HTMLInputElement>('#passcode-input')
+    this.passcodeResolving = true
+    card?.classList.remove('code-error')
+    card?.classList.add('code-ok')
+    await new Promise<void>((resolve) => window.setTimeout(resolve, 550))
+    if (input) {
+      input.value = ''
+      this.updatePasscodeDots('')
+    }
+    card?.classList.remove('code-ok')
+    this.passcodeResolving = false
+    this.hidePasscodePopup()
+    this.unlock()
+  }
+
   private resetPasscodeInput(input: HTMLInputElement): void {
     if (this.passcodeResetTimer !== undefined) clearTimeout(this.passcodeResetTimer)
     this.passcodeResetTimer = window.setTimeout(() => {
       this.passcodeResetTimer = undefined
       input.value = ''
       this.updatePasscodeDots('')
+      this.container.querySelector<HTMLElement>('.passcode-card')?.classList.remove('code-error')
       input.focus({ preventScroll: true })
     }, 650)
   }
@@ -471,6 +493,8 @@ export class AuthUI {
     card?.classList.remove('passcode-shake')
     void card?.offsetWidth
     card?.classList.add('passcode-shake')
+    // Wrong input — stroke turns RED.
+    card?.classList.add('code-error')
   }
 
   private updatePasscodeDots(value: string): void {

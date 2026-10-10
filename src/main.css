@@ -249,26 +249,35 @@ input, button { -webkit-tap-highlight-color: transparent; }
 .notify-bell .bell-icon { width: 22px; height: 22px; pointer-events: none; }
 body[data-screen="v-work-progress"] .notify-bell { display: none; }
 
-/* Access-code popup gate — same glass theme + pop animation as screens. */
+/* Access-code ROUND gate — circular glass coin, double stroke + depth. */
 .passcode-overlay { position: fixed; inset: 0; z-index: 40; display: none; align-items: center; justify-content: center; padding: 20px; background: rgba(30,20,60,.38); backdrop-filter: blur(10px) saturate(1.2); -webkit-backdrop-filter: blur(10px) saturate(1.2); }
 .passcode-overlay.show { display: flex; animation: pop .45s cubic-bezier(.2,1.4,.4,1); }
-.passcode-card { position: relative; width: min(340px,90vw); padding: 30px 24px 26px; text-align: center; border: 1.5px solid rgba(255,255,255,.96); outline: 2px solid rgba(124,58,237,.42); outline-offset: 2px; border-radius: 28px; background: linear-gradient(145deg,rgba(255,255,255,.94) 0%,rgba(245,241,255,.78) 42%,rgba(224,213,255,.7) 100%); box-shadow: inset 0 8px 16px rgba(255,255,255,.9), inset 0 -9px 16px rgba(76,29,149,.16), 0 0 0 4px rgba(255,255,255,.54), 0 0 0 7px rgba(124,58,237,.16), 0 18px 28px rgba(76,29,149,.2); }
+.passcode-card { position: relative; width: min(360px,92vw); aspect-ratio: 1; display: flex; flex-direction: column; align-items: center; justify-content: center; overflow: hidden; text-align: center; border: 2px solid rgba(255,255,255,.96); outline: 2px solid rgba(124,58,237,.5); outline-offset: 5px; border-radius: 50%; background: radial-gradient(circle at 30% 18%,rgba(255,255,255,.95),rgba(255,255,255,.55) 34%,transparent 60%),linear-gradient(145deg,rgba(255,255,255,.94) 0%,rgba(245,241,255,.8) 45%,rgba(224,213,255,.72) 100%); box-shadow: 0 0 0 5px rgba(124,58,237,.22),0 25px 54px rgba(78,44,166,.35),0 12px 24px rgba(76,29,149,.22),inset 0 8px 16px rgba(255,255,255,.9),inset 0 -12px 24px rgba(76,29,149,.18); transition: border-color .3s ease,outline-color .3s ease,box-shadow .3s ease; }
+.passcode-card::after { position: absolute; inset: 12px; border: 1px solid rgba(255,255,255,.7); border-radius: 50%; box-shadow: inset 0 6px 14px rgba(76,29,149,.16),inset 0 -6px 12px rgba(255,255,255,.8),0 0 0 1px rgba(124,58,237,.18); content: ''; pointer-events: none; }
+.passcode-card > * { position: relative; z-index: 1; width: min(100%,248px); }
 .passcode-card.passcode-shake { animation: passcode-shake .5s ease-in-out; }
 @keyframes passcode-shake { 0%,100% { transform: translateX(0); } 20% { transform: translateX(-8px); } 40% { transform: translateX(8px); } 60% { transform: translateX(-5px); } 80% { transform: translateX(5px); } }
-.passcode-title { color: #4c1d95; font-size: 22px; font-weight: 900; letter-spacing: 1px; }
-.passcode-sub { margin-top: 6px; color: #755aa3; font-size: 12.5px; font-weight: 700; }
-.passcode-dots { display: flex; gap: 10px; justify-content: center; margin: 18px 0 14px; }
+/* Correct code complete — stroke turns green. */
+.passcode-card.code-ok { border-color: rgba(5,150,105,.9); outline-color: rgba(5,150,105,.75); box-shadow: 0 0 0 5px rgba(5,150,105,.28),0 0 36px rgba(5,150,105,.55),0 25px 54px rgba(78,44,166,.35),inset 0 8px 16px rgba(255,255,255,.9),inset 0 -12px 24px rgba(5,150,105,.22); }
+.passcode-card.code-ok .passcode-dots i.is-on { background: linear-gradient(135deg,#059669,#10b981); border-color: #059669; box-shadow: 0 0 8px rgba(5,150,105,.55); }
+/* Wrong input — stroke turns red. */
+.passcode-card.code-error { border-color: rgba(190,48,76,.9); outline-color: rgba(190,48,76,.7); box-shadow: 0 0 0 5px rgba(190,48,76,.25),0 0 30px rgba(190,48,76,.45),0 25px 54px rgba(78,44,166,.35),inset 0 8px 16px rgba(255,255,255,.9),inset 0 -12px 24px rgba(190,48,76,.2); }
+.passcode-card.code-error .passcode-dots i.is-on { background: linear-gradient(135deg,#e11d48,#f43f5e); border-color: #be123c; box-shadow: 0 0 8px rgba(190,48,76,.5); }
+.passcode-title { margin: 0; color: #4c1d95; font-size: 20px; font-weight: 900; letter-spacing: 1px; }
+.passcode-sub { margin-top: 4px; color: #755aa3; font-size: 12px; font-weight: 700; }
+.passcode-dots { display: flex; gap: 10px; justify-content: center; margin: 12px 0 10px; }
 .passcode-dots i { display: block; width: 13px; height: 13px; border-radius: 50%; border: 2px solid rgba(124,58,237,.4); background: rgba(255,255,255,.7); transition: transform .2s ease, background .2s ease, border-color .2s ease; }
 .passcode-dots i.is-on { background: linear-gradient(135deg,#7c3aed,#a855f7); border-color: #7c3aed; transform: scale(1.2); box-shadow: 0 0 8px rgba(124,58,237,.5); }
-.passcode-wrap input { width: 100%; height: 52px; border: 1.5px solid rgba(124,58,237,.2); border-radius: 18px; outline: none; color: #302152; background: rgba(255,255,255,.74); box-shadow: inset 0 5px 10px rgba(110,70,255,.12); text-align: center; font-size: 22px; font-weight: 900; letter-spacing: 10px; text-indent: 10px; }
+.passcode-wrap input { width: 100%; height: 48px; border: 1.5px solid rgba(124,58,237,.2); border-radius: 18px; outline: none; color: #302152; background: rgba(255,255,255,.74); box-shadow: inset 0 5px 10px rgba(110,70,255,.12); text-align: center; font-size: 20px; font-weight: 900; letter-spacing: 10px; text-indent: 10px; }
 .passcode-wrap input:focus { border-color: rgba(124,58,237,.72); background: #fff; box-shadow: inset 0 5px 11px rgba(110,70,255,.13), 0 0 0 4px rgba(124,58,237,.13); }
-.passcode-error { margin-top: 12px; color: #b4233f; font-size: 12.5px; font-weight: 800; }
+.passcode-error { margin-top: 8px; color: #b4233f; font-size: 12px; font-weight: 800; }
 .passcode-alt { margin-top: 14px; border: 0; color: var(--purple); background: none; cursor: pointer; font-size: 13.5px; font-weight: 700; }
 .passcode-alt:hover { color: var(--accent); }
-.passcode-fp { margin-top: 12px; display: inline-flex; align-items: center; gap: 8px; border: 1.5px solid rgba(124,58,237,.35); border-radius: 14px; padding: 9px 16px; background: rgba(124,58,237,.06); color: var(--purple); font-size: 13.5px; font-weight: 700; cursor: pointer; }
+.passcode-fp { margin-top: 10px; display: inline-flex; width: auto; align-items: center; gap: 8px; border: 1.5px solid rgba(124,58,237,.35); border-radius: 14px; padding: 8px 14px; background: rgba(124,58,237,.06); color: var(--purple); font-size: 13.5px; font-weight: 700; cursor: pointer; }
 .passcode-fp:hover { background: rgba(124,58,237,.12); }
 .passcode-fp.fp-busy { opacity: .6; pointer-events: none; }
-.passcode-fp-icon { font-size: 16px; line-height: 1; }
+.passcode-fp-icon { display: inline-flex; }
+.passcode-fp-icon .fp-icon { width: 26px; height: 26px; }
 
 /* Main screen: no ball, brand name, tagline, or bottom text. */
 body[data-screen="v-work-progress"] .site-header,
