@@ -5,6 +5,7 @@
   "type": "module",
   "scripts": {
     "dev": "vite",
+    "dev:android": "NODE_OPTIONS=\"--require ./scripts/patch-net.cjs\" vite --host",
     "build": "tsc --noEmit && vite build",
     "preview": "vite preview"
   },

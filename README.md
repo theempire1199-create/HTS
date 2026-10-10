@@ -9,6 +9,20 @@ npm run dev
 
 Open the local URL printed by Vite. For a production bundle, run `npm run build`; `npm run preview` serves that bundle locally.
 
+### Running on Android (Termux)
+
+Android 11+ blocks network-interface queries, so Node's `os.networkInterfaces()`
+throws `ERR_SYSTEM_ERROR` (errno 13) and Vite crashes on startup while printing the
+LAN URLs. The dev server therefore binds to `127.0.0.1`, which avoids that call.
+If you need LAN access from another device, use:
+
+```sh
+npm run dev:android
+```
+
+That preloads `scripts/patch-net.cjs` (a small `os.networkInterfaces` guard) and
+binds to all interfaces, so it works on Android without the crash.
+
 Signup and login metadata is stored in this browser (password-free) and can be read via the helpers in `src/LoginDetails.ts` and `src/SignupDetails.ts`.
 
 ## Available flows
