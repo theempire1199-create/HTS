@@ -27,17 +27,23 @@ Signup and login metadata is stored in this browser (password-free) and can be r
 
 ## Authentication (Firebase)
 
-Identity is handled by **Firebase Authentication** (project `htsos-e3fa4`), so accounts
-and sessions are server-managed and real verification / password-reset emails are sent.
+Identity is handled by **Firebase Authentication** (project
+`hasan-tech-studio`), so accounts and sessions are server-managed and real
+verification / password-reset emails are sent.
 
-- Create an account with email + password; a verification email is sent.
+- Create an account with name + contact + email + password; a verification
+  email is sent.
 - Sign in with your email and password.
 - Reset a password via the emailed link.
 - Restore the session on reload and sign out.
 
 The **app-lock access code** (6-digit) is a local, per-device convenience lock
-(PBKDF2-hashed in this browser) — it is not an identity mechanism. The Firebase web
-config lives in `src/firebase.ts`; those values are public client identifiers, and
-access is controlled by Firebase Security Rules and Authorized Domains.
+(PBKDF2-hashed in this browser) — it is not an identity mechanism. The Firebase
+web config loads from `VITE_FIREBASE_*` environment variables (see
+`.env.example`; real values live in the gitignored `.env`). Those values are
+public client identifiers, and access is controlled by Firebase Security Rules
+and Authorized Domains.
 
-See `docs/ANDROID_AND_FIREBASE_SETUP.md` for the Firebase console setup steps.
+See `docs/ANDROID_SETUP.md` for packaging the PWA as an Android app.
+Backend dobara connect karna ho to step-by-step Hindi manual:
+`docs/BACKEND_SETUP_MANUAL.md`.

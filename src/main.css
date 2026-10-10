@@ -356,6 +356,13 @@ label { display: block; margin: 13px 0 6px; color: #4c1d95; font-size: 12.5px; f
 @keyframes word-print { 0% { opacity: 0; filter: blur(2px); transform: translateY(7px) scale(.58) rotateX(68deg); } 62% { opacity: 1; filter: blur(0); transform: translateY(-1px) scale(1.04) rotateX(-5deg); } 100% { opacity: 1; filter: none; transform: translateY(0) scale(1) rotateX(0); } }
 @keyframes pencil-blink { 0%,45% { opacity: 1; } 46%,100% { opacity: .18; } }
 
+/* Login orb links: signup + forgot password (card ke andar, ENTER ke neeche). */
+.orb-links { display: flex; flex-direction: column; align-items: center; gap: 4px; margin-top: 10px; transform: translateZ(25px); }
+.link-button { border: 0; padding: 4px 10px; background: none; color: #4c1d95; cursor: pointer; font-size: 12px; font-weight: 800; letter-spacing: .2px; text-decoration: underline; text-underline-offset: 3px; }
+.link-button:hover { color: #7c3aed; }
+.link-button:active { transform: scale(.97); }
+.link-button:focus-visible { outline: 2px solid rgba(124,58,237,.5); outline-offset: 2px; border-radius: 8px; }
+
 /* Anime boy companion variant. */
 .bot-companion { width: 78px; height: 80px; filter: drop-shadow(0 7px 5px rgba(35,21,104,.34)); }
 .bot-hair { position: absolute; z-index: 4; top: 4px; left: 50%; width: 65px; height: 38px; background: linear-gradient(145deg,#24245f 5%,#43369c 62%,#211d58); clip-path: polygon(5% 55%,12% 24%,25% 35%,29% 2%,43% 27%,58% 0,62% 26%,80% 10%,76% 39%,100% 30%,88% 64%,72% 55%,64% 77%,45% 61%,30% 77%,21% 59%); filter: drop-shadow(0 3px 2px rgba(24,15,76,.4)); transform: translateX(-50%) rotate(-3deg); }

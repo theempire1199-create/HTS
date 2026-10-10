@@ -153,6 +153,10 @@ export class AuthUI {
                   <label for="li-pw">Password</label>
                   <div class="input-wrap mirror-wrap password-wrap"><input id="li-pw" name="password" type="password" autocomplete="current-password" minlength="6" required><span class="input-pencil" aria-hidden="true">|</span><div class="mirror" id="mirror-li-pw" aria-hidden="true"></div><button type="button" class="eye" aria-label="Show password" data-action="toggle-password" data-target="li-pw">${EYE_OFF_ICON}</button></div>
                   <button class="primary-button btn-enter" type="submit"><span>ENTER</span></button>
+                  <div class="orb-links">
+                    <button class="link-button" type="button" data-action="show-screen" data-screen="v-signup">New here? Create account</button>
+                    <button class="link-button" type="button" data-action="forgot-password">Forgot password?</button>
+                  </div>
                 </form>
               </div></div>
             </div>
@@ -343,8 +347,14 @@ export class AuthUI {
       const action = target.dataset.action
       if (action === 'show-screen') {
         const screen = target.dataset.screen
+        if (screen === 'v-signup') {
+          // Login me typed email ho to signup me prefill karo
+          const typed = this.container.querySelector<HTMLInputElement>('#li-id')?.value.trim() || ''
+          if (typed) this.signupPrefillIdentifier = typed
+        }
         if (screen === 'v-start' || screen === 'v-login' || screen === 'v-signup' || screen === 'v-reverify' || screen === 'v-work-progress') this.showScreen(screen)
       }
+      if (action === 'forgot-password') void this.handleForgotPassword(target)
       if (action === 'toggle-password') this.togglePassword(target)
       if (action === 'send-otp') void this.sendOTP()
       if (action === 'verify-email') void this.sendOTP()
@@ -447,7 +457,20 @@ export class AuthUI {
     }
     this.currentScreen = screen
     if (screen === 'v-signup') this.resetSignupWizard(this.signupPrefillIdentifier)
-    if (screen === 'v-work-progress') this.renderDashboard()
+    if (screen === 'v-work-progress') {
+      this.renderDashboard()
+      // Cloud se fresh profile lao, local se alag ho to dobara render karo
+      const me = authDB.getCurrentUser()
+      if (me) {
+        void authDB.fetchCloudProfile(me.id).then((cloud) => {
+          if (!cloud || this.currentScreen !== 'v-work-progress') return
+          const fresh = authDB.getCurrentUser()
+          if (fresh && (fresh.contact !== me.contact || fresh.loginCount !== me.loginCount)) {
+            this.renderDashboard()
+          }
+        })
+      }
+    }
     this.container.querySelectorAll<HTMLElement>('.view').forEach(view => {
       const active = view.id === screen
       view.classList.toggle('show', active)
@@ -1404,6 +1427,18 @@ export class AuthUI {
     } catch (error) {
       this.showToast({ message: this.errorMessage(error), type: 'error' })
     }
+  }
+
+  /** Login card ka "Forgot password?" — #li-id se email lekar reset link bhejta hai. */
+  private async handleForgotPassword(button: HTMLElement): Promise<void> {
+    const input = this.container.querySelector<HTMLInputElement>('#li-id')
+    const identifier = input?.value.trim() || ''
+    if (!identifier) {
+      this.showToast({ message: 'Pehle apna email ID likho, phir Forgot password dabao.', type: 'warning' })
+      input?.focus({ preventScroll: true })
+      return
+    }
+    await this.resetPasswordWithFeedback(identifier, button as HTMLButtonElement)
   }
 
   /** Sends (or resends) the Firebase email-verification link. */

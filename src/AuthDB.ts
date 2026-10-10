@@ -8,7 +8,18 @@ import {
   updateProfile,
   type User as FirebaseUser,
 } from 'firebase/auth'
-import { firebaseAuth } from './firebase'
+import { firebaseAuth, firebaseDB } from './firebase'
+import {
+  addDoc,
+  collection,
+  doc,
+  getDoc,
+  getDocs,
+  limit,
+  query,
+  setDoc,
+  where,
+} from 'firebase/firestore'
 import type { SignupDetails } from './index'
 import { isValidContact, isValidEmail } from './index'
 import { reportStorageUnavailable } from './Notify'
@@ -23,6 +34,37 @@ export interface AppUser {
   lastLoginAt: number
   loginCount: number
   emailVerified: boolean
+}
+
+/**
+ * Firestore DB schema (project: hasan-tech-studio).
+ *
+ * Collection: `users` — docId = Firebase Auth uid
+ *   - name: string (full name, >= 3 chars)
+ *   - email: string (lowercase, unique via Firebase Auth)
+ *   - contact: string (unique via app-level query, e.g. 9876543210)
+ *   - createdAt: number (Date.now() ms at signup)
+ *   - lastLoginAt: number (Date.now() ms at last login)
+ *   - loginCount: number (increments on every login)
+ *   - emailVerified: boolean (mirror of Auth flag, refreshed on reverify)
+ *   - updatedAt: number (last profile write)
+ *
+ * Subcollection: `users/{uid}/logins` — auto-id per login
+ *   - timestamp: number
+ *   - identifier: string (email used at login)
+ *
+ * Security: user can read/write ONLY their own doc
+ * (see `firestore.rules` in repo root).
+ */
+export interface UserProfileDoc {
+  name: string
+  email: string
+  contact: string
+  createdAt: number
+  lastLoginAt: number
+  loginCount: number
+  emailVerified: boolean
+  updatedAt: number
 }
 
 /** Local-only extras keyed by Firebase uid (contact, login count, app-lock code). */
@@ -75,7 +117,44 @@ function friendly(error: unknown): Error {
     case 'auth/too-many-requests': return new Error('Too many attempts. Please wait a moment and try again.')
     case 'auth/network-request-failed': return new Error('Network error — check your connection and try again.')
     case 'auth/requires-recent-login': return new Error('Please sign in again to continue.')
+    case 'permission-denied': return new Error('Database permission denied — Firestore Rules check karo (firestore.rules).')
+    case 'unavailable': return new Error('Database unavailable — Firestore Database bana hai ya nahi check karo.')
     default: return error instanceof Error ? new Error(error.message) : new Error('Something went wrong. Please try again.')
+  }
+}
+
+/** Firestore helpers — best-effort: Auth kabhi Firestore ki wajah se block nahi hoga. */
+function userDocRef(uid: string) {
+  return doc(firebaseDB, 'users', uid)
+}
+
+function loginsCollectionRef(uid: string) {
+  return collection(firebaseDB, 'users', uid, 'logins')
+}
+
+async function isContactTaken(contact: string): Promise<boolean> {
+  try {
+    const snap = await getDocs(query(collection(firebaseDB, 'users'), where('contact', '==', contact), limit(1)))
+    return !snap.empty
+  } catch {
+    // Firestore abhi bana nahi / offline — signup ko block mat karo.
+    return false
+  }
+}
+
+async function writeUserDoc(uid: string, data: Partial<UserProfileDoc>, merge = true): Promise<void> {
+  try {
+    await setDoc(userDocRef(uid), { ...data, updatedAt: Date.now() }, { merge })
+  } catch (error) {
+    console.warn('[Firestore] user doc write failed:', error)
+  }
+}
+
+async function recordLoginEvent(uid: string, identifier: string): Promise<void> {
+  try {
+    await addDoc(loginsCollectionRef(uid), { timestamp: Date.now(), identifier })
+  } catch (error) {
+    console.warn('[Firestore] login event write failed:', error)
   }
 }
 
@@ -121,6 +200,7 @@ export class AuthDB {
     if (!isValidContact(contact)) throw new Error('Enter a valid contact number (7-15 digits, e.g. 9876543210 or +919876543210).')
     if (!isValidEmail(email)) throw new Error('Enter a valid email ID (e.g. name@example.com).')
     if (details.password.length < 6) throw new Error('Secret must be at least 6 characters.')
+    if (await isContactTaken(contact)) throw new Error('That contact number is already registered — try signing in.')
     let cred
     try {
       cred = await createUserWithEmailAndPassword(firebaseAuth, email, details.password)
@@ -130,6 +210,18 @@ export class AuthDB {
     if (name) {
       try { await updateProfile(cred.user, { displayName: name }) } catch { /* display name is best-effort */ }
     }
+    const now = Date.now()
+    // 1) Firestore — source of truth (users/{uid})
+    await writeUserDoc(cred.user.uid, {
+      name,
+      email,
+      contact,
+      createdAt: now,
+      lastLoginAt: now,
+      loginCount: 0,
+      emailVerified: cred.user.emailVerified,
+    }, false)
+    // 2) Local cache — offline fallback + app-lock store
     const profiles = readProfiles()
     profiles[cred.user.uid] = { ...(profiles[cred.user.uid] ?? { loginCount: 0 }), contact, loginCount: profiles[cred.user.uid]?.loginCount ?? 0 }
     writeProfiles(profiles)
@@ -145,12 +237,67 @@ export class AuthDB {
     } catch (error) {
       throw friendly(error)
     }
+    const now = Date.now()
+    // 1) Local cache update (instant UI)
     const profiles = readProfiles()
     const profile = profiles[cred.user.uid] ?? { contact: '', loginCount: 0 }
     profile.loginCount = (profile.loginCount || 0) + 1
     profiles[cred.user.uid] = profile
     writeProfiles(profiles)
+    // 2) Firestore sync — backfill purane users + increment count
+    try {
+      const snap = await getDoc(userDocRef(cred.user.uid))
+      const existing = snap.exists() ? (snap.data() as Partial<UserProfileDoc>) : null
+      const nextCount = (existing?.loginCount ?? profile.loginCount - 1) + 1
+      // Purane user ka contact local me ho to cloud me backfill karo
+      const contact = existing?.contact || profile.contact || ''
+      await writeUserDoc(cred.user.uid, {
+        name: existing?.name || cred.user.displayName || '',
+        email: cred.user.email?.toLowerCase() || email,
+        contact,
+        createdAt: existing?.createdAt || now,
+        lastLoginAt: now,
+        loginCount: nextCount,
+        emailVerified: cred.user.emailVerified,
+      })
+      if (contact && !profile.contact) {
+        profile.contact = contact
+        profiles[cred.user.uid] = profile
+        writeProfiles(profiles)
+      } else if (contact) {
+        profile.contact = contact
+        profile.loginCount = nextCount
+        profiles[cred.user.uid] = profile
+        writeProfiles(profiles)
+      } else {
+        profile.loginCount = nextCount
+        profiles[cred.user.uid] = profile
+        writeProfiles(profiles)
+      }
+    } catch (error) {
+      console.warn('[Firestore] login sync failed:', error)
+    }
+    void recordLoginEvent(cred.user.uid, email)
     return this.mapUser(cred.user)
+  }
+
+  /** Firestore se fresh profile lao + local cache sync karo. Dashboard ke liye. */
+  async fetchCloudProfile(uid: string): Promise<UserProfileDoc | null> {
+    try {
+      const snap = await getDoc(userDocRef(uid))
+      if (!snap.exists()) return null
+      const data = snap.data() as UserProfileDoc
+      const profiles = readProfiles()
+      const local = profiles[uid] ?? { contact: '', loginCount: 0 }
+      if (data.contact) local.contact = data.contact
+      if (typeof data.loginCount === 'number') local.loginCount = data.loginCount
+      profiles[uid] = local
+      writeProfiles(profiles)
+      return data
+    } catch (error) {
+      console.warn('[Firestore] profile fetch failed:', error)
+      return null
+    }
   }
 
   async logout(): Promise<void> {
@@ -184,7 +331,9 @@ export class AuthDB {
     const fb = firebaseAuth.currentUser
     if (!fb) return false
     await fb.reload()
-    return firebaseAuth.currentUser?.emailVerified ?? false
+    const verified = firebaseAuth.currentUser?.emailVerified ?? false
+    if (verified) void writeUserDoc(fb.uid, { emailVerified: true })
+    return verified
   }
 
   // ---- Local app-lock passcode (per Firebase uid, PBKDF2-hashed) ----

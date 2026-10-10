@@ -1,13 +1,11 @@
-# HTS — Android app + Firebase setup
+# HTS — Android app setup
 
-This document lists exactly what has to be collected outside the codebase so the
-two pending pieces can be finished: (A) packaging the PWA as an installable
-Android app, and (B) wiring a real backend (Firebase) in place of the current
-browser-only auth.
+This document covers packaging the PWA as an installable Android app.
+Auth backend: Firebase Authentication (project `hasan-tech-studio`).
 
 ---
 
-## Part A — Turn the PWA into an Android app (PWABuilder / TWA)
+## Turn the PWA into an Android app (PWABuilder / TWA)
 
 A PWA becomes a proper Android app via a **Trusted Web Activity (TWA)**. PWABuilder
 generates it and also produces the two values the `assetlinks.json` file needs.
@@ -56,39 +54,10 @@ the TWA is verified and runs without the browser chrome.
 
 ---
 
-## Part B — Real backend with Firebase
+## Backend (connected)
 
-Steps to create the project and hand over the config:
-
-1. Open **https://console.firebase.google.com** → **Add project** (e.g.
-   `hasan-tech-studio`).
-2. **Build → Authentication → Get started**, then under **Sign-in method** enable
-   **Email/Password**. (Enable **Phone** only if you want real SMS OTP — that
-   needs the Blaze plan and reCAPTCHA.)
-3. **Project settings (gear) → General → Your apps → Web (`</>`)** → register a web
-   app (nickname: `HTS web`).
-4. Firebase shows a `firebaseConfig` object. **Send me these 6 values:**
-   - `apiKey`
-   - `authDomain`
-   - `projectId`
-   - `storageBucket`
-   - `messagingSenderId`
-   - `appId`
-5. **Do NOT send** the service-account key / private key. The six values above are
-   public client config and are safe to ship in the browser bundle — security is
-   enforced by Firebase Security Rules and Authorized Domains, not by hiding them.
-6. **Authentication → Settings → Authorized domains** → add your Vercel domain.
-7. Optional but recommended: configure the **Email templates / SMTP** provider so
-   verification and reset emails actually send, and/or **Firestore** if profile
-   data should live server-side.
-
-### What I will do once the config arrives
-
-- Add the `firebase` SDK and a `src/firebase.ts` initialised from environment
-  variables (`VITE_FIREBASE_*`), with a committed `.env.example`.
-- Replace the localStorage `AuthDB` identity layer with **Firebase Auth**
-  (email/password), server-managed sessions, and real email/phone verification in
-  place of the demo OTP.
-- Keep the per-user **app-lock passcode** as a purely local convenience lock (it is
-  not an identity mechanism).
-- Update the README to drop the "prototype / not production" caveat.
+Auth runs on Firebase Authentication (email/password) with server-managed
+sessions and real verification / password-reset emails. The web config loads
+from `VITE_FIREBASE_*` env vars (see `.env.example`). The per-user **app-lock
+passcode** stays a purely local convenience lock (it is not an identity
+mechanism).
