@@ -25,11 +25,19 @@ binds to all interfaces, so it works on Android without the crash.
 
 Signup and login metadata is stored in this browser (password-free) and can be read via the helpers in `src/LoginDetails.ts` and `src/SignupDetails.ts`.
 
-## Available flows
+## Authentication (Firebase)
 
-- Create an account, verify the demo code, and sign in.
-- Sign in with the registered email or contact number and password.
-- Reset a password after verifying a recovery code.
-- Restore the current session on reload and sign out.
+Identity is handled by **Firebase Authentication** (project `htsos-e3fa4`), so accounts
+and sessions are server-managed and real verification / password-reset emails are sent.
 
-Verification codes appear on the verification screen because this project has no email or SMS provider configured. Account records and sessions are stored in this browser; passwords are salted and hashed with PBKDF2 before storage. This makes the screens usable as a local prototype, but it is not a production authentication service. Production use needs a server-side identity provider, server-managed sessions, and a configured email/SMS delivery service.
+- Create an account with email + password; a verification email is sent.
+- Sign in with your email and password.
+- Reset a password via the emailed link.
+- Restore the session on reload and sign out.
+
+The **app-lock access code** (6-digit) is a local, per-device convenience lock
+(PBKDF2-hashed in this browser) — it is not an identity mechanism. The Firebase web
+config lives in `src/firebase.ts`; those values are public client identifiers, and
+access is controlled by Firebase Security Rules and Authorized Domains.
+
+See `docs/ANDROID_AND_FIREBASE_SETUP.md` for the Firebase console setup steps.

@@ -1,35 +1,40 @@
-import type { AuthDBData, SignupDetails, User } from './index'
-import { identifiersEqual, isValidContact, isValidEmail, normalize } from './index'
-import { reportStorageUnavailable } from './Notify'
 import {
-  AUTH_DB_KEY,
-  AUTH_SCHEMA_KEY,
-  AUTH_SCHEMA_VERSION,
-  CURRENT_USER_KEY,
-  LEGACY_AUTH_DB_KEY,
-  LEGACY_CURRENT_USER_KEY,
-  LOGIN_DETAILS_KEY,
-  SIGNUP_DETAILS_KEY,
-} from './utils/constants'
+  createUserWithEmailAndPassword,
+  onAuthStateChanged,
+  sendEmailVerification,
+  sendPasswordResetEmail,
+  signInWithEmailAndPassword,
+  signOut,
+  updateProfile,
+  type User as FirebaseUser,
+} from 'firebase/auth'
+import { firebaseAuth } from './firebase'
+import type { SignupDetails } from './index'
+import { isValidContact, isValidEmail } from './index'
+import { reportStorageUnavailable } from './Notify'
 
-const STORAGE_KEY = AUTH_DB_KEY
-const CURRENT_USER_STORAGE_KEY = CURRENT_USER_KEY
-const SCHEMA_KEY = AUTH_SCHEMA_KEY
-const SCHEMA_VERSION = AUTH_SCHEMA_VERSION
-const LEGACY_STORAGE_KEY = LEGACY_AUTH_DB_KEY
-const LEGACY_CURRENT_USER_STORAGE_KEY = LEGACY_CURRENT_USER_KEY
-const OTP_TTL = 5 * 60 * 1000
+/** Public shape of a signed-in user, mapped from the Firebase user record. */
+export interface AppUser {
+  id: string
+  name: string
+  email: string
+  contact: string
+  createdAt: number
+  lastLoginAt: number
+  loginCount: number
+  emailVerified: boolean
+}
+
+/** Local-only extras keyed by Firebase uid (contact, login count, app-lock code). */
+type Profile = {
+  contact: string
+  loginCount: number
+  passcodeSalt?: string
+  passcodeHash?: string
+}
+
+const PROFILE_KEY = 'hts_profiles_v1'
 const PBKDF2_ITERATIONS = 210_000
-
-type PendingOTP = { code: string; expiresAt: number; purpose: 'recovery' }
-
-function isRecord(value: unknown): value is Record<string, unknown> {
-  return typeof value === 'object' && value !== null
-}
-
-function isStoredUser(value: unknown): value is User {
-  return isRecord(value) && typeof value.id === 'string' && typeof value.name === 'string' && typeof value.email === 'string' && typeof value.contact === 'string' && typeof value.passwordSalt === 'string' && typeof value.passwordHash === 'string' && typeof value.createdAt === 'number' && typeof value.lastLoginAt === 'number' && typeof value.loginCount === 'number'
-}
 
 function encode(bytes: Uint8Array): string {
   return btoa(String.fromCharCode(...bytes))
@@ -39,212 +44,187 @@ function decode(value: string): Uint8Array {
   return Uint8Array.from(atob(value), char => char.charCodeAt(0))
 }
 
+function readProfiles(): Record<string, Profile> {
+  try {
+    const parsed: unknown = JSON.parse(localStorage.getItem(PROFILE_KEY) || '{}')
+    if (parsed && typeof parsed === 'object') return parsed as Record<string, Profile>
+  } catch {
+    // Corrupt store reads as empty; it is rebuilt on next write.
+  }
+  return {}
+}
+
+function writeProfiles(map: Record<string, Profile>): void {
+  try {
+    localStorage.setItem(PROFILE_KEY, JSON.stringify(map))
+  } catch {
+    reportStorageUnavailable()
+  }
+}
+
+/** Turn a Firebase error code into a message a person can act on. */
+function friendly(error: unknown): Error {
+  const code = (error as { code?: string } | null)?.code ?? ''
+  switch (code) {
+    case 'auth/email-already-in-use': return new Error('That email is already registered — try signing in.')
+    case 'auth/invalid-email': return new Error('Enter a valid email ID.')
+    case 'auth/weak-password': return new Error('Secret must be at least 6 characters.')
+    case 'auth/user-not-found':
+    case 'auth/wrong-password':
+    case 'auth/invalid-credential': return new Error('Email or password is incorrect.')
+    case 'auth/too-many-requests': return new Error('Too many attempts. Please wait a moment and try again.')
+    case 'auth/network-request-failed': return new Error('Network error — check your connection and try again.')
+    case 'auth/requires-recent-login': return new Error('Please sign in again to continue.')
+    default: return error instanceof Error ? new Error(error.message) : new Error('Something went wrong. Please try again.')
+  }
+}
+
 export class AuthDB {
   private static instance: AuthDB
-  private data: AuthDBData
-  private otps = new Map<string, PendingOTP>()
 
-  private constructor() {
-    AuthDB.safeRemove(LEGACY_STORAGE_KEY)
-    AuthDB.safeRemove(LEGACY_CURRENT_USER_STORAGE_KEY)
-    if (AuthDB.safeGet(SCHEMA_KEY) !== SCHEMA_VERSION) {
-      AuthDB.safeRemove(STORAGE_KEY)
-      AuthDB.safeRemove(CURRENT_USER_STORAGE_KEY)
-      AuthDB.safeRemove(LOGIN_DETAILS_KEY)
-      AuthDB.safeRemove(SIGNUP_DETAILS_KEY)
-      AuthDB.safeSet(SCHEMA_KEY, SCHEMA_VERSION)
-    }
-    this.data = this.loadFromStorage()
-  }
+  private constructor() {}
 
   static getInstance(): AuthDB {
     if (!AuthDB.instance) AuthDB.instance = new AuthDB()
     return AuthDB.instance
   }
 
-  private static safeGet(key: string): string | null {
-    try {
-      return localStorage.getItem(key)
-    } catch {
-      return null
+  /** Subscribe to sign-in/sign-out. Returns an unsubscribe function. */
+  onChange(listener: (user: AppUser | null) => void): () => void {
+    return onAuthStateChanged(firebaseAuth, (fb) => listener(fb ? this.mapUser(fb) : null))
+  }
+
+  private mapUser(fb: FirebaseUser): AppUser {
+    const profile = readProfiles()[fb.uid] ?? { contact: '', loginCount: 0 }
+    return {
+      id: fb.uid,
+      name: fb.displayName || '',
+      email: fb.email || '',
+      contact: profile.contact || '',
+      createdAt: fb.metadata.creationTime ? Date.parse(fb.metadata.creationTime) : 0,
+      lastLoginAt: fb.metadata.lastSignInTime ? Date.parse(fb.metadata.lastSignInTime) : 0,
+      loginCount: profile.loginCount || 0,
+      emailVerified: fb.emailVerified,
     }
   }
 
-  private static safeSet(key: string, value: string): void {
-    try {
-      localStorage.setItem(key, value)
-    } catch {
-      // Quota exceeded or private mode: surface a friendly warning instead of failing silently.
-      reportStorageUnavailable()
-    }
-  }
-
-  private static safeRemove(key: string): void {
-    try {
-      localStorage.removeItem(key)
-    } catch {
-      // Storage may be unavailable in a private or restricted browsing context.
-    }
-  }
-
-  private loadFromStorage(): AuthDBData {
-    try {
-      const parsed: unknown = JSON.parse(AuthDB.safeGet(STORAGE_KEY) || '{}')
-      if (!isRecord(parsed)) return { users: {}, logins: [] }
-      const rawUsers = isRecord(parsed.users) ? parsed.users : {}
-      const users = Object.fromEntries(Object.entries(rawUsers).filter(([, user]) => isStoredUser(user))) as Record<string, User>
-      const logins = Array.isArray(parsed.logins) ? parsed.logins.filter((entry): entry is AuthDBData['logins'][number] => isRecord(entry) && typeof entry.userId === 'string' && typeof entry.timestamp === 'number') : []
-      return { users, logins }
-    } catch {
-      return { users: {}, logins: [] }
-    }
-  }
-
-  private persist(): void {
-    AuthDB.safeSet(STORAGE_KEY, JSON.stringify(this.data))
-  }
-
-  private findUserRecord(identifier: string): User | null {
-    const key = normalize(identifier)
-    if (this.data.users[key]) return this.data.users[key]
-    // Fall back to the tolerant matcher so a contact saved as "+9198..." is
-    // still found when entered as "98...", "098...", or with spaces/dashes.
-    return Object.values(this.data.users).find(user => identifiersEqual(user.contact, identifier) || identifiersEqual(user.email, identifier)) || null
-  }
-
-  findUser(identifier: string): Omit<User, 'passwordSalt' | 'passwordHash'> | null {
-    const user = this.findUserRecord(identifier)
-    if (!user) return null
-    const { passwordSalt: _salt, passwordHash: _hash, ...publicUser } = user
-    return publicUser
-  }
-
-  hasAccount(identifier: string): boolean {
-    return this.findUserRecord(identifier) !== null
-  }
-
-  private async hashPassword(password: string, salt: Uint8Array): Promise<Uint8Array> {
-    if (!globalThis.crypto?.subtle) throw new Error('Secure password storage requires HTTPS or localhost.')
-    const key = await crypto.subtle.importKey('raw', new TextEncoder().encode(password), 'PBKDF2', false, ['deriveBits'])
-    const bits = await crypto.subtle.deriveBits({ name: 'PBKDF2', salt: salt.slice().buffer as ArrayBuffer, iterations: PBKDF2_ITERATIONS, hash: 'SHA-256' }, key, 256)
-    return new Uint8Array(bits)
-  }
-
-  private async verifyPassword(password: string, user: User): Promise<boolean> {
-    const actual = await this.hashPassword(password, decode(user.passwordSalt))
-    const expected = decode(user.passwordHash)
-    if (actual.length !== expected.length) return false
-    let difference = 0
-    for (let i = 0; i < actual.length; i++) difference |= actual[i] ^ expected[i]
-    return difference === 0
-  }
-
-  hasPasscode(userId: string): boolean {
-    const user = this.data.users[normalize(userId)]
-    return Boolean(user?.passcodeHash && user?.passcodeSalt)
-  }
-
-  /** Set or replace the per-user app-lock code. Stored PBKDF2-hashed, never in plaintext. */
-  async setPasscode(userId: string, code: string): Promise<void> {
-    if (!/^\d{6}$/.test(code)) throw new Error('Access code must be exactly 6 digits.')
-    const user = this.data.users[normalize(userId)]
-    if (!user) throw new Error('No signed-in account to protect.')
-    const salt = crypto.getRandomValues(new Uint8Array(16))
-    user.passcodeSalt = encode(salt)
-    user.passcodeHash = encode(await this.hashPassword(code, salt))
-    this.persist()
-  }
-
-  async verifyPasscode(userId: string, code: string): Promise<boolean> {
-    const user = this.data.users[normalize(userId)]
-    if (!user?.passcodeHash || !user?.passcodeSalt) return false
-    const actual = await this.hashPassword(code, decode(user.passcodeSalt))
-    const expected = decode(user.passcodeHash)
-    if (actual.length !== expected.length) return false
-    let difference = 0
-    for (let i = 0; i < actual.length; i++) difference |= actual[i] ^ expected[i]
-    return difference === 0
-  }
-
-  startOTP(identifier: string, purpose: PendingOTP['purpose']): string {
-    const key = normalize(identifier)
-    const bytes = crypto.getRandomValues(new Uint32Array(1))
-    const code = String(bytes[0] % 1_000_000).padStart(6, '0')
-    this.otps.set(key, { code, purpose, expiresAt: Date.now() + OTP_TTL })
-    return code
-  }
-
-  verifyOTP(identifier: string, code: string, purpose: PendingOTP['purpose']): boolean {
-    const key = normalize(identifier)
-    const otp = this.otps.get(key)
-    if (!otp || otp.purpose !== purpose || otp.expiresAt < Date.now() || otp.code !== code.trim()) {
-      if (otp && otp.expiresAt < Date.now()) this.otps.delete(key)
-      return false
-    }
-    this.otps.delete(key)
-    return true
+  getCurrentUser(): AppUser | null {
+    const fb = firebaseAuth.currentUser
+    return fb ? this.mapUser(fb) : null
   }
 
   async createUser(details: SignupDetails): Promise<void> {
     const name = details.name.trim()
     const contact = details.contact.trim()
-    const email = details.email.trim()
+    const email = details.email.trim().toLowerCase()
     if (name.length < 3) throw new Error('Enter full name.')
     if (!isValidContact(contact)) throw new Error('Enter a valid contact number (7-15 digits, e.g. 9876543210 or +919876543210).')
     if (!isValidEmail(email)) throw new Error('Enter a valid email ID (e.g. name@example.com).')
     if (details.password.length < 6) throw new Error('Secret must be at least 6 characters.')
-    const emailKey = normalize(details.email)
-    const contactKey = normalize(details.contact)
-    if (this.hasAccount(emailKey) || this.hasAccount(contactKey)) throw new Error('An account with this email or contact number already exists.')
-
-    const salt = crypto.getRandomValues(new Uint8Array(16))
-    const passwordHash = await this.hashPassword(details.password, salt)
-    const user: User = {
-      id: emailKey,
-      name,
-      email: emailKey,
-      contact,
-      passwordSalt: encode(salt),
-      passwordHash: encode(passwordHash),
-      createdAt: Date.now(),
-      lastLoginAt: 0,
-      loginCount: 0,
+    let cred
+    try {
+      cred = await createUserWithEmailAndPassword(firebaseAuth, email, details.password)
+    } catch (error) {
+      throw friendly(error)
     }
-    this.data.users[emailKey] = user
-    this.persist()
+    if (name) {
+      try { await updateProfile(cred.user, { displayName: name }) } catch { /* display name is best-effort */ }
+    }
+    const profiles = readProfiles()
+    profiles[cred.user.uid] = { ...(profiles[cred.user.uid] ?? { loginCount: 0 }), contact, loginCount: profiles[cred.user.uid]?.loginCount ?? 0 }
+    writeProfiles(profiles)
+    try { await sendEmailVerification(cred.user) } catch { /* verification email is best-effort */ }
   }
 
-  async login(identifier: string, password: string): Promise<Omit<User, 'passwordSalt' | 'passwordHash'>> {
-    const user = this.findUserRecord(identifier)
-    if (!user || !(await this.verifyPassword(password, user))) throw new Error('Email, contact number, or password is incorrect.')
-    user.lastLoginAt = Date.now()
-    user.loginCount += 1
-    this.data.logins.push({ userId: user.id, timestamp: Date.now() })
-    this.data.logins = this.data.logins.slice(-100)
-    this.persist()
-    AuthDB.safeSet(CURRENT_USER_STORAGE_KEY, user.id)
-    const current = this.findUser(user.id)
-    if (!current) throw new Error('Login succeeded but session could not be restored.')
-    return current
+  async login(identifier: string, password: string): Promise<AppUser> {
+    const email = identifier.trim().toLowerCase()
+    if (!isValidEmail(email)) throw new Error('Sign in with your email ID (phone sign-in is not enabled yet).')
+    let cred
+    try {
+      cred = await signInWithEmailAndPassword(firebaseAuth, email, password)
+    } catch (error) {
+      throw friendly(error)
+    }
+    const profiles = readProfiles()
+    const profile = profiles[cred.user.uid] ?? { contact: '', loginCount: 0 }
+    profile.loginCount = (profile.loginCount || 0) + 1
+    profiles[cred.user.uid] = profile
+    writeProfiles(profiles)
+    return this.mapUser(cred.user)
   }
 
-  async resetPassword(identifier: string, password: string): Promise<void> {
-    if (password.length < 6) throw new Error('Secret must be at least 6 characters.')
-    const user = this.findUserRecord(identifier)
-    if (!user) throw new Error('No account was found for that email or contact number.')
+  async logout(): Promise<void> {
+    await signOut(firebaseAuth)
+  }
+
+  /** Sends a Firebase password-reset email. */
+  async resetPassword(identifier: string): Promise<void> {
+    const email = identifier.trim().toLowerCase()
+    if (!isValidEmail(email)) throw new Error('Enter your email ID to reset your password.')
+    try {
+      await sendPasswordResetEmail(firebaseAuth, email)
+    } catch (error) {
+      throw friendly(error)
+    }
+  }
+
+  async sendVerificationEmail(): Promise<void> {
+    const fb = firebaseAuth.currentUser
+    if (!fb) throw new Error('Sign in first.')
+    if (fb.emailVerified) return
+    try {
+      await sendEmailVerification(fb)
+    } catch (error) {
+      throw friendly(error)
+    }
+  }
+
+  /** Re-reads the user record and reports whether the email is now verified. */
+  async reloadVerification(): Promise<boolean> {
+    const fb = firebaseAuth.currentUser
+    if (!fb) return false
+    await fb.reload()
+    return firebaseAuth.currentUser?.emailVerified ?? false
+  }
+
+  // ---- Local app-lock passcode (per Firebase uid, PBKDF2-hashed) ----
+
+  hasPasscode(userId: string): boolean {
+    const profile = readProfiles()[userId]
+    return Boolean(profile?.passcodeHash && profile?.passcodeSalt)
+  }
+
+  async setPasscode(userId: string, code: string): Promise<void> {
+    if (!/^\d{6}$/.test(code)) throw new Error('Access code must be exactly 6 digits.')
     const salt = crypto.getRandomValues(new Uint8Array(16))
-    user.passwordSalt = encode(salt)
-    user.passwordHash = encode(await this.hashPassword(password, salt))
-    this.persist()
+    const profiles = readProfiles()
+    const profile = profiles[userId] ?? { contact: '', loginCount: 0 }
+    profile.passcodeSalt = encode(salt)
+    profile.passcodeHash = encode(await this.hash(code, salt))
+    profiles[userId] = profile
+    writeProfiles(profiles)
   }
 
-  getCurrentUser(): Omit<User, 'passwordSalt' | 'passwordHash'> | null {
-    const id = AuthDB.safeGet(CURRENT_USER_STORAGE_KEY)
-    return id ? this.findUser(id) : null
+  async verifyPasscode(userId: string, code: string): Promise<boolean> {
+    const profile = readProfiles()[userId]
+    if (!profile?.passcodeHash || !profile?.passcodeSalt) return false
+    const actual = await this.hash(code, decode(profile.passcodeSalt))
+    const expected = decode(profile.passcodeHash)
+    if (actual.length !== expected.length) return false
+    let difference = 0
+    for (let i = 0; i < actual.length; i++) difference |= actual[i] ^ expected[i]
+    return difference === 0
   }
 
-  logout(): void {
-    AuthDB.safeRemove(CURRENT_USER_STORAGE_KEY)
+  private async hash(password: string, salt: Uint8Array): Promise<Uint8Array> {
+    if (!globalThis.crypto?.subtle) throw new Error('Secure storage requires HTTPS or localhost.')
+    const key = await crypto.subtle.importKey('raw', new TextEncoder().encode(password), 'PBKDF2', false, ['deriveBits'])
+    const bits = await crypto.subtle.deriveBits(
+      { name: 'PBKDF2', salt: salt.slice().buffer as ArrayBuffer, iterations: PBKDF2_ITERATIONS, hash: 'SHA-256' },
+      key,
+      256,
+    )
+    return new Uint8Array(bits)
   }
 }
 

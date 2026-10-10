@@ -1,6 +1,6 @@
 import { authDB } from './AuthDB'
-import type { OTPPurpose, ScreenId, SignupDetails, ToastOptions } from './index'
-import { identifiersEqual, isValidContact, isValidEmail, isValidIdentifier } from './index'
+import type { ScreenId, SignupDetails, ToastOptions } from './index'
+import { isValidContact, isValidEmail, isValidIdentifier } from './index'
 import { rafThrottle, startTimedLoop } from './PerformanceLayer'
 import { getLoginDetails, recordLoginDetail } from './LoginDetails'
 import { recordSignupDetail } from './SignupDetails'
@@ -51,8 +51,6 @@ function escapeHtml(value: string): string {
 export class AuthUI {
   private readonly container: HTMLElement
   private currentScreen: ScreenId = 'v-start'
-  private otpPurpose: OTPPurpose = 'recovery'
-  private otpIdentifier = ''
   private toastTimeout: number | undefined
   private isBotAnimating = false
   private botBubbleTimer: number | undefined
@@ -97,7 +95,7 @@ export class AuthUI {
     this.startBotIdleAnimation()
     this.refreshBell()
     if (window.location.hash === '#reverify') {
-      this.configureReverify('recovery', '')
+      this.configureReverify('')
       this.showScreen('v-reverify')
       return
     }
@@ -150,7 +148,7 @@ export class AuthUI {
             <div class="round3d thali-card login-orb" id="card1">
               <div class="thali-plate"><div class="thali-inner">
                 <form id="login-form" class="auth-form" novalidate>
-                  <label for="li-id">Email ID or Contact Number</label>
+                  <label for="li-id">Email ID</label>
                   <div class="input-wrap mirror-wrap identifier-wrap"><input id="li-id" name="identifier" autocomplete="username" required><span class="input-pencil" aria-hidden="true">|</span><div class="mirror" id="mirror-li-id" aria-hidden="true"></div></div>
                   <label for="li-pw">Password</label>
                   <div class="input-wrap mirror-wrap password-wrap"><input id="li-pw" name="password" type="password" autocomplete="current-password" minlength="6" required><span class="input-pencil" aria-hidden="true">|</span><div class="mirror" id="mirror-li-pw" aria-hidden="true"></div><button type="button" class="eye" aria-label="Show password" data-action="toggle-password" data-target="li-pw">${EYE_OFF_ICON}</button></div>
@@ -213,17 +211,15 @@ export class AuthUI {
 
         <section class="view" id="v-reverify" aria-labelledby="reverify-title" hidden>
           <div class="reverify-layout">
-            <h1 class="title screen-title" id="reverify-title">Re-verify 🔄<small>Verify your email / number with OTP</small></h1>
+            <h1 class="title screen-title" id="reverify-title">Verify your email ✉️<small>We sent a verification link to your inbox</small></h1>
             <div class="auth-card reverify-card" id="card3">
               <form id="reverify-form" class="auth-form" novalidate>
-                <label for="rv-id">Email ID or Contact</label>
+                <label for="rv-id">Email</label>
                 <div class="otp-row">
-                  <div class="input-wrap"><input id="rv-id" autocomplete="username" placeholder="you@email.com / number" required></div>
-                  <button type="button" class="mini-button" data-action="send-otp">Send OTP</button>
+                  <div class="input-wrap"><input id="rv-id" type="email" autocomplete="email" readonly></div>
+                  <button type="button" class="mini-button" data-action="send-otp">Send link</button>
                 </div>
-                <label for="rv-otp">Enter OTP</label>
-                <div class="input-wrap"><input id="rv-otp" inputmode="numeric" autocomplete="one-time-code" pattern="[0-9]{6}" maxlength="6" placeholder="6-digit OTP" required></div>
-                <button class="primary-button" type="submit">VERIFY →</button>
+                <button class="primary-button" type="submit">I'VE VERIFIED ✓</button>
               </form>
             </div>
             <button class="back-button" type="button" data-action="show-screen" data-screen="v-login">← Back to Login</button>
@@ -350,7 +346,8 @@ export class AuthUI {
         if (screen === 'v-start' || screen === 'v-login' || screen === 'v-signup' || screen === 'v-reverify' || screen === 'v-work-progress') this.showScreen(screen)
       }
       if (action === 'toggle-password') this.togglePassword(target)
-      if (action === 'send-otp') this.sendOTP()
+      if (action === 'send-otp') void this.sendOTP()
+      if (action === 'verify-email') void this.sendOTP()
       if (action === 'notify-toggle') void this.toggleNotifications()
       if (action === 'fingerprint') void this.handleFingerprint()
       if (action === 'signup-next') this.advanceSignupStep()
@@ -373,11 +370,6 @@ export class AuthUI {
       if (form.id === 'reverify-form') void this.handleReverify(form)
     }
     this.container.addEventListener('submit', this.containerSubmitHandler)
-
-    this.container.querySelector<HTMLInputElement>('#rv-otp')?.addEventListener('input', (event) => {
-      const input = event.currentTarget as HTMLInputElement
-      input.value = input.value.replace(/\D/g, '').slice(0, 6)
-    })
 
     const passcodeInput = this.container.querySelector<HTMLInputElement>('#passcode-input')
     passcodeInput?.addEventListener('input', () => this.handlePasscodeInput())
@@ -1317,15 +1309,6 @@ export class AuthUI {
       this.showToast({ message: '❌ Password min 6 chars', type: 'error' })
       return
     }
-    if (!authDB.hasAccount(identifier)) {
-      this.setBotMood('happy')
-      this.flashBot('bot-success')
-      this.showBotBubble('welcome to hasan tech studio')
-      this.signupPrefillIdentifier = identifier
-      this.showToast({ message: '🆕 Not signed up yet — taking you to signup...', type: 'info' })
-      this.showScreen('v-signup')
-      return
-    }
     const submitButton = form.querySelector<HTMLButtonElement>('button[type="submit"]')
     try {
       const user = await this.withBusyButton(submitButton, () => authDB.login(identifier, password))
@@ -1372,99 +1355,71 @@ export class AuthUI {
         loginIdentifier.dispatchEvent(new Event('input', { bubbles: true }))
       }
       this.signupPrefillIdentifier = ''
-      this.showToast({ message: `🎉 ${details.name}, signed up! Please login now.`, type: 'success' })
-      void pushLocal('HASAN TECH STUDIO', `Account created for ${details.name} — please login.`)
-      this.showScreen('v-login')
+      this.showToast({ message: `🎉 ${details.name}, account created! Check your email to verify.`, type: 'success' })
+      void pushLocal('HASAN TECH STUDIO', `Account created for ${details.name} — verify your email.`)
+      this.configureReverify(details.email)
+      this.showScreen('v-reverify')
     } catch (error) {
       this.showToast({ message: this.errorMessage(error), type: 'error' })
     }
   }
 
-  private issueOTP(): void {
-    const code = authDB.startOTP(this.otpIdentifier, this.otpPurpose)
-    const sendButton = this.container.querySelector<HTMLButtonElement>('[data-action="send-otp"]')
-    if (sendButton) {
-      sendButton.textContent = 'Sent ✓'
-      sendButton.classList.add('sent')
-    }
-    this.showToast({ message: `📩 OTP sent for reverify (demo: ${code})`, type: 'info' })
-  }
-
-  private configureReverify(purpose: OTPPurpose, identifier: string): void {
-    this.otpPurpose = purpose
-    this.otpIdentifier = identifier
+  private configureReverify(identifier: string): void {
+    const email = identifier || authDB.getCurrentUser()?.email || ''
     const title = this.container.querySelector<HTMLElement>('#reverify-title')
-    if (title) title.innerHTML = 'Re-verify 🔄<small>Verify your email / number with OTP</small>'
+    if (title) title.innerHTML = 'Verify your email ✉️<small>We sent a verification link to your inbox</small>'
     const identifierInput = this.container.querySelector<HTMLInputElement>('#rv-id')
-    if (!identifierInput) return
-    identifierInput.value = identifier
-    identifierInput.readOnly = false
-    const otpInput = this.container.querySelector<HTMLInputElement>('#rv-otp')
-    if (otpInput) otpInput.value = ''
+    if (identifierInput) {
+      identifierInput.value = email
+      identifierInput.readOnly = true
+    }
   }
 
+  /** "I've verified" — re-reads the Firebase user and checks the email flag. */
   private async handleReverify(form: HTMLFormElement): Promise<void> {
-    const identifierInput = this.container.querySelector<HTMLInputElement>('#rv-id')
-    const codeInput = this.container.querySelector<HTMLInputElement>('#rv-otp')
-    if (!identifierInput || !codeInput) return
-    const identifier = identifierInput.value.trim()
-    const code = codeInput.value.trim()
-    if (!identifier || !isValidIdentifier(identifier)) {
-      this.showToast({ message: 'Enter a valid email or contact number.', type: 'error' })
-      return
-    }
-    if (!identifiersEqual(identifier, this.otpIdentifier)) {
-      this.showToast({ message: 'Send a verification code for this email or number first.', type: 'warning' })
-      return
-    }
-    if (!authDB.verifyOTP(identifier, code, this.otpPurpose)) {
-      this.showToast({ message: 'That code is incorrect or expired. Request a new one and try again.', type: 'error' })
+    if (!authDB.getCurrentUser()) {
+      this.showToast({ message: 'Sign in first, then verify your email.', type: 'warning' })
       return
     }
     const submitButton = form.querySelector<HTMLButtonElement>('button[type="submit"]')
-    if (submitButton) {
-      submitButton.disabled = true
-      try {
-        this.showToast({ message: '✅ Re-verified successfully!', type: 'success' })
-        this.showScreen('v-login')
-      } finally {
-        submitButton.disabled = false
+    try {
+      const verified = await this.withBusyButton(submitButton, () => authDB.reloadVerification())
+      if (verified) {
+        this.showToast({ message: '✅ Email verified!', type: 'success' })
+        this.showScreen('v-work-progress')
+      } else {
+        this.showToast({ message: 'Not verified yet — open the link in your email, then try again.', type: 'warning' })
       }
-      return
+    } catch (error) {
+      this.showToast({ message: this.errorMessage(error), type: 'error' })
     }
-    this.showToast({ message: '✅ Re-verified successfully!', type: 'success' })
-    this.showScreen('v-login')
   }
 
-  /** Password-reset path shares the same PBKDF2 busy feedback as login/signup. */
-  async resetPasswordWithFeedback(
-    identifier: string,
-    password: string,
-    button: HTMLButtonElement | null,
-  ): Promise<void> {
+  /** Sends a Firebase password-reset email. */
+  async resetPasswordWithFeedback(identifier: string, button: HTMLButtonElement | null): Promise<void> {
     try {
-      await this.withBusyButton(button, () => authDB.resetPassword(identifier, password))
-      this.showToast({ message: '✅ Secret updated. Please login.', type: 'success' })
+      await this.withBusyButton(button, () => authDB.resetPassword(identifier))
+      this.showToast({ message: '✅ Password reset email sent.', type: 'success' })
       this.showScreen('v-login')
     } catch (error) {
       this.showToast({ message: this.errorMessage(error), type: 'error' })
     }
   }
 
-  private sendOTP(): void {
-    const identifier = this.container.querySelector<HTMLInputElement>('#rv-id')?.value.trim() || ''
-    if (!isValidIdentifier(identifier)) {
-      this.showToast({ message: 'Enter a valid email or contact number.', type: 'error' })
-      return
+  /** Sends (or resends) the Firebase email-verification link. */
+  private async sendOTP(): Promise<void> {
+    try {
+      await authDB.sendVerificationEmail()
+      const sendButton = this.container.querySelector<HTMLButtonElement>('[data-action="send-otp"]')
+      if (sendButton) {
+        sendButton.textContent = 'Sent ✓'
+        sendButton.classList.add('sent')
+      }
+      const email = authDB.getCurrentUser()?.email || ''
+      this.showToast({ message: `📩 Verification link sent${email ? ` to ${email}` : ''}.`, type: 'info' })
+    } catch (error) {
+      this.showToast({ message: this.errorMessage(error), type: 'error' })
     }
-    if (this.otpPurpose === 'recovery' && !authDB.hasAccount(identifier)) {
-      this.showToast({ message: 'No account was found for that email or contact number.', type: 'error' })
-      return
-    }
-    this.otpIdentifier = identifier
-    this.issueOTP()
-    const otpInput = this.container.querySelector<HTMLInputElement>('#rv-otp')
-    if (otpInput) otpInput.value = ''
   }
 
   private errorMessage(error: unknown): string {
@@ -1489,6 +1444,7 @@ export class AuthUI {
     mount.innerHTML = `
       <div class="dash">
         <h1 class="dash-hello">Welcome back, ${escapeHtml(user.name || user.email)}</h1>
+        ${user.emailVerified ? '' : '<div class="dash-banner">Your email is not verified yet. <button class="dash-banner-btn" type="button" data-action="verify-email">Send verification email</button></div>'}
         <div class="dash-grid">
           <section class="dash-card">
             <h2>Profile</h2>

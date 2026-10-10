@@ -716,3 +716,6 @@ body[data-screen="v-work-progress"] .site-footer { display: none; }
 .dash-activity { list-style: none; margin: 0; padding: 0; display: grid; gap: 8px; }
 .dash-activity li { display: flex; justify-content: space-between; gap: 12px; padding: 8px 12px; border-radius: 12px; background: rgba(124,58,237,.06); font-size: 13px; }
 .dash-activity time { color: #755aa3; }
+
+.dash-banner { display: flex; flex-wrap: wrap; gap: 10px; align-items: center; justify-content: center; padding: 12px 16px; border-radius: 14px; background: rgba(234,179,8,.14); color: #854d0e; font-size: 13.5px; font-weight: 600; }
+.dash-banner-btn { border: 0; border-radius: 10px; padding: 7px 12px; background: var(--purple); color: #fff; font-weight: 700; font-size: 12.5px; cursor: pointer; }
