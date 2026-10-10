@@ -8,7 +8,7 @@ import {
   updateProfile,
   type User as FirebaseUser,
 } from 'firebase/auth'
-import { firebaseAuth, firebaseDB } from './firebase'
+import { getFirebaseAuth, getFirebaseDB } from './firebase'
 import {
   addDoc,
   collection,
@@ -118,6 +118,7 @@ function friendly(error: unknown): Error {
     case 'auth/network-request-failed': return new Error('Network error — check your connection and try again.')
     case 'auth/requires-recent-login': return new Error('Please sign in again to continue.')
     case 'permission-denied': return new Error('Database permission denied — Firestore Rules check karo (firestore.rules).')
+    case 'failed-precondition': return new Error('Database not created yet — Firebase console me Firestore Database banao.')
     case 'unavailable': return new Error('Database unavailable — Firestore Database bana hai ya nahi check karo.')
     default: return error instanceof Error ? new Error(error.message) : new Error('Something went wrong. Please try again.')
   }
@@ -125,16 +126,16 @@ function friendly(error: unknown): Error {
 
 /** Firestore helpers — best-effort: Auth kabhi Firestore ki wajah se block nahi hoga. */
 function userDocRef(uid: string) {
-  return doc(firebaseDB, 'users', uid)
+  return doc(getFirebaseDB(), 'users', uid)
 }
 
 function loginsCollectionRef(uid: string) {
-  return collection(firebaseDB, 'users', uid, 'logins')
+  return collection(getFirebaseDB(), 'users', uid, 'logins')
 }
 
 async function isContactTaken(contact: string): Promise<boolean> {
   try {
-    const snap = await getDocs(query(collection(firebaseDB, 'users'), where('contact', '==', contact), limit(1)))
+    const snap = await getDocs(query(collection(getFirebaseDB(), 'users'), where('contact', '==', contact), limit(1)))
     return !snap.empty
   } catch {
     // Firestore abhi bana nahi / offline — signup ko block mat karo.
@@ -170,7 +171,7 @@ export class AuthDB {
 
   /** Subscribe to sign-in/sign-out. Returns an unsubscribe function. */
   onChange(listener: (user: AppUser | null) => void): () => void {
-    return onAuthStateChanged(firebaseAuth, (fb) => listener(fb ? this.mapUser(fb) : null))
+    return onAuthStateChanged(getFirebaseAuth(), (fb) => listener(fb ? this.mapUser(fb) : null))
   }
 
   private mapUser(fb: FirebaseUser): AppUser {
@@ -188,7 +189,7 @@ export class AuthDB {
   }
 
   getCurrentUser(): AppUser | null {
-    const fb = firebaseAuth.currentUser
+    const fb = getFirebaseAuth().currentUser
     return fb ? this.mapUser(fb) : null
   }
 
@@ -203,7 +204,7 @@ export class AuthDB {
     if (await isContactTaken(contact)) throw new Error('That contact number is already registered — try signing in.')
     let cred
     try {
-      cred = await createUserWithEmailAndPassword(firebaseAuth, email, details.password)
+      cred = await createUserWithEmailAndPassword(getFirebaseAuth(), email, details.password)
     } catch (error) {
       throw friendly(error)
     }
@@ -233,7 +234,7 @@ export class AuthDB {
     if (!isValidEmail(email)) throw new Error('Sign in with your email ID (phone sign-in is not enabled yet).')
     let cred
     try {
-      cred = await signInWithEmailAndPassword(firebaseAuth, email, password)
+      cred = await signInWithEmailAndPassword(getFirebaseAuth(), email, password)
     } catch (error) {
       throw friendly(error)
     }
@@ -301,7 +302,7 @@ export class AuthDB {
   }
 
   async logout(): Promise<void> {
-    await signOut(firebaseAuth)
+    await signOut(getFirebaseAuth())
   }
 
   /** Sends a Firebase password-reset email. */
@@ -309,14 +310,14 @@ export class AuthDB {
     const email = identifier.trim().toLowerCase()
     if (!isValidEmail(email)) throw new Error('Enter your email ID to reset your password.')
     try {
-      await sendPasswordResetEmail(firebaseAuth, email)
+      await sendPasswordResetEmail(getFirebaseAuth(), email)
     } catch (error) {
       throw friendly(error)
     }
   }
 
   async sendVerificationEmail(): Promise<void> {
-    const fb = firebaseAuth.currentUser
+    const fb = getFirebaseAuth().currentUser
     if (!fb) throw new Error('Sign in first.')
     if (fb.emailVerified) return
     try {
@@ -328,10 +329,10 @@ export class AuthDB {
 
   /** Re-reads the user record and reports whether the email is now verified. */
   async reloadVerification(): Promise<boolean> {
-    const fb = firebaseAuth.currentUser
+    const fb = getFirebaseAuth().currentUser
     if (!fb) return false
     await fb.reload()
-    const verified = firebaseAuth.currentUser?.emailVerified ?? false
+    const verified = getFirebaseAuth().currentUser?.emailVerified ?? false
     if (verified) void writeUserDoc(fb.uid, { emailVerified: true })
     return verified
   }
