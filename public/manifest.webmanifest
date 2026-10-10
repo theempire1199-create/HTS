@@ -13,11 +13,6 @@
       "name": "Login",
       "url": "/#login",
       "icons": [{ "src": "/icons/icon-192.png", "sizes": "192x192", "type": "image/png" }]
-    },
-    {
-      "name": "Admin Panel",
-      "url": "/admin-panel/",
-      "icons": [{ "src": "/icons/icon-192.png", "sizes": "192x192", "type": "image/png" }]
     }
   ],
   "icons": [

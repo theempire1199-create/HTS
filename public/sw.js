@@ -6,8 +6,6 @@ const CORE = [
   '/',
   '/index.html',
   '/manifest.webmanifest',
-  '/admin-panel/',
-  '/admin-panel/index.html',
 ]
 
 self.addEventListener('install', (event) => {

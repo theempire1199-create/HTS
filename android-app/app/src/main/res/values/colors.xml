@@ -1,9 +1,0 @@
-<?xml version="1.0" encoding="utf-8"?>
-<resources>
-    <color name="hts_purple">#FF7C3AED</color>
-    <color name="hts_purple_light">#FF8B5CF6</color>
-    <color name="hts_deep">#FF4C1D95</color>
-    <color name="hts_bg">#FFF5F3FF</color>
-    <color name="hts_launcher_bg">#FF7C3AED</color>
-    <color name="white">#FFFFFFFF</color>
-</resources>
