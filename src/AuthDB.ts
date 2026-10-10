@@ -11,7 +11,6 @@ type LockRecord = {
 }
 
 const LOCK_KEY = 'hts_app_lock_v1'
-const LEGACY_PROFILE_KEY = 'hts_profiles_v1'
 const PBKDF2_ITERATIONS = 210_000
 
 function encode(bytes: Uint8Array): string {
@@ -42,32 +41,10 @@ function writeLock(record: LockRecord): void {
   }
 }
 
-/** One-time adoption: old per-uid code (Firebase era) becomes the device code. */
-function adoptLegacyCode(): void {
-  if (readLock()) return
-  try {
-    const parsed: unknown = JSON.parse(localStorage.getItem(LEGACY_PROFILE_KEY) || '{}')
-    if (!parsed || typeof parsed !== 'object') return
-    for (const entry of Object.values(parsed as Record<string, unknown>)) {
-      if (entry && typeof entry === 'object') {
-        const { passcodeSalt, passcodeHash } = entry as { passcodeSalt?: unknown; passcodeHash?: unknown }
-        if (typeof passcodeSalt === 'string' && typeof passcodeHash === 'string' && passcodeSalt && passcodeHash) {
-          writeLock({ salt: passcodeSalt, hash: passcodeHash })
-          return
-        }
-      }
-    }
-  } catch {
-    // Legacy store unreadable — user sets a fresh code.
-  }
-}
-
 export class AuthDB {
   private static instance: AuthDB
 
-  private constructor() {
-    adoptLegacyCode()
-  }
+  private constructor() {}
 
   static getInstance(): AuthDB {
     if (!AuthDB.instance) AuthDB.instance = new AuthDB()

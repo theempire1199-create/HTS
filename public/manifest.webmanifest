@@ -10,8 +10,8 @@
   "theme_color": "#7c3aed",
   "shortcuts": [
     {
-      "name": "Login",
-      "url": "/#login",
+      "name": "Unlock",
+      "url": "/#code",
       "icons": [{ "src": "/icons/icon-192.png", "sizes": "192x192", "type": "image/png" }]
     }
   ],

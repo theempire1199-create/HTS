@@ -1,7 +1,7 @@
 # HTS — Android app setup
 
 This document covers packaging the PWA as an installable Android app.
-Auth backend: Firebase Authentication (project `hasan-tech-studio`).
+Auth is device-only: 6-digit code + fingerprint (WebAuthn). No backend.
 
 ---
 
@@ -54,10 +54,7 @@ the TWA is verified and runs without the browser chrome.
 
 ---
 
-## Backend (connected)
+## Lock (device-only, no backend)
 
-Auth runs on Firebase Authentication (email/password) with server-managed
-sessions and real verification / password-reset emails. The web config loads
-from `VITE_FIREBASE_*` env vars (see `.env.example`). The per-user **app-lock
-passcode** stays a purely local convenience lock (it is not an identity
-mechanism).
+Unlock is a 6-digit code (PBKDF2-hashed on device) + fingerprint via WebAuthn.
+No accounts, no server, no env vars needed for deploys.

@@ -23,8 +23,6 @@ npm run dev:android
 That preloads `scripts/patch-net.cjs` (a small `os.networkInterfaces` guard) and
 binds to all interfaces, so it works on Android without the crash.
 
-Signup and login metadata is stored in this browser (password-free) and can be read via the helpers in `src/LoginDetails.ts` and `src/SignupDetails.ts`.
-
 ## Authentication (device-only)
 
 No accounts, no server, no backend. Unlock is purely on-device:

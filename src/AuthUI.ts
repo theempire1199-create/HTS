@@ -357,7 +357,7 @@ export class AuthUI {
     if (subEl) subEl.textContent = sub
   }
 
-  /** First-run + "Change access code": naya 6-digit code set karo. */
+  /** First-run + "Change access code": fingerprint + 6-digit code setup. */
   private openPasscodeSetup(): void {
     const overlay = this.container.querySelector<HTMLElement>('#passcode-overlay')
     const input = this.container.querySelector<HTMLInputElement>('#passcode-input')
@@ -365,13 +365,15 @@ export class AuthUI {
     if (!overlay || !input) return
     this.passcodeMode = 'set'
     this.pendingPasscode = ''
-    this.setPasscodeCopy('Set access code', 'Choose a 6-digit code')
+    this.setPasscodeCopy('Set access code', 'Choose a 6-digit code — ya 👆 se fingerprint lagao')
     if (error) error.hidden = true
     input.value = ''
     this.updatePasscodeDots('')
     overlay.hidden = false
     void overlay.offsetWidth
     overlay.classList.add('show')
+    // Setup me fingerprint button dikhao taaki pehli baar me hi dono set ho jayein.
+    void this.refreshFingerprintButton()
     if (this.passcodeFocusTimer !== undefined) clearTimeout(this.passcodeFocusTimer)
     this.passcodeFocusTimer = window.setTimeout(() => {
       this.passcodeFocusTimer = undefined
@@ -606,6 +608,22 @@ export class AuthUI {
     const button = this.container.querySelector<HTMLElement>('#fp-button')
     button?.classList.add('fp-busy')
     try {
+      // Setup mode (first time / change code): sirf fingerprint REGISTER karo,
+      // unlock nahi — code flow uske baad jari rehta hai.
+      if (this.passcodeMode !== 'verify') {
+        this.showToast({ message: 'Touch the sensor to add your fingerprint (optional).', type: 'info' })
+        try {
+          await this.registerFingerprint()
+          this.showToast({ message: '✅ Fingerprint added — ab code set karo.', type: 'success' })
+          void pushLocal('HASAN TECH STUDIO', 'Fingerprint registered.')
+          void this.refreshFingerprintButton()
+        } catch (error) {
+          if (!(error instanceof DOMException && (error.name === 'NotAllowedError' || error.name === 'AbortError'))) {
+            this.showToast({ message: this.errorMessage(error), type: 'error' })
+          }
+        }
+        return
+      }
       const existing = readFpCredentialId()
       if (existing) {
         try {
